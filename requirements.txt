@@ -1,0 +1,4 @@
+fastapi>=0.110
+uvicorn>=0.29
+# Everything else (Apify + Claude calls, JSON, scoring) uses the Python standard
+# library only — so this folder ports cleanly with almost no dependencies.

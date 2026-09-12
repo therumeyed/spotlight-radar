@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Radar — daily social trend discovery</title>
+  <meta name="description" content="A daily read of what's starting to trend, turned into content ideas grounded in real crawled posts.">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="topbar">
+      <div class="brand">
+        <div class="orb" aria-hidden="true"></div>
+        <div><h2>THE RADAR</h2><p id="brandSub">Daily social trend discovery · crafts · AU</p></div>
+      </div>
+      <div class="actions">
+        <span class="badge" id="modeBadge">—</span>
+        <span class="updated muted" id="updatedAt"></span>
+        <button type="button" class="btn" id="historyButton" aria-expanded="false" aria-controls="historyPopover">History</button>
+      </div>
+    </header>
+
+    <div class="scrim" id="scrim"></div>
+    <aside class="history-popover" id="historyPopover" role="dialog" aria-modal="true" aria-labelledby="historyMonth">
+      <div class="history-head">
+        <div class="history-nav">
+          <button type="button" class="icon-btn" id="historyPrev" aria-label="Previous month">‹</button>
+          <h3 id="historyMonth">—</h3>
+          <button type="button" class="icon-btn" id="historyNext" aria-label="Next month">›</button>
+        </div>
+        <button type="button" class="icon-btn" id="historyClose" aria-label="Close history">×</button>
+      </div>
+      <div class="weekdays"><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span><span>S</span></div>
+      <div class="calendar" id="historyCalendar"></div>
+      <div class="history-note">Highlighted dates have a saved daily read. Select one to load that day without changing the page layout.</div>
+    </aside>
+
+    <main>
+      <div class="heading-row">
+        <div class="heading"><h1>What should we create today?</h1><p>Content opportunities grounded in live audience behaviour — not generic prompts.</p></div>
+        <div class="date-control">
+          <span class="muted" id="reportDate" aria-live="polite">—</span>
+          <button type="button" class="btn" id="backToToday" hidden>Back to today</button>
+        </div>
+      </div>
+
+      <section class="brief" aria-label="Today's opportunity summary">
+        <div class="brief-copy"><span class="eyebrow">Today's read</span><h2 id="briefHeadline">—</h2><p id="briefBody"></p></div>
+        <div class="brief-stat"><strong id="statIdeas">—</strong><span>ideas to act on</span></div>
+        <div class="brief-stat"><strong id="statSources">—</strong><span>sources checked</span></div>
+        <div class="brief-stat"><strong id="statSignals">—</strong><span>signals detected</span></div>
+      </section>
+
+      <div class="toolbar">
+        <div class="section-title"><h2>Recommended content ideas</h2><p>Each idea includes one crawled example so the creative team can see the format in context.</p></div>
+        <div class="filterset" id="filterset" aria-label="Filter ideas" hidden></div>
+      </div>
+
+      <section class="idea-list" id="ideaList" aria-live="polite"></section>
+      <div class="empty" id="emptyState" hidden>No recommendations match this channel today.</div>
+
+      <section class="signal-strip" id="signalStrip" hidden>
+        <div class="signal-head"><div class="section-title"><h2>Signals behind today's ideas</h2><p>A supporting view — not a second list of recommendations.</p></div></div>
+        <div class="signal-preview" id="signalPreview"></div>
+      </section>
+    </main>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

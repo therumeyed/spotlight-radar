@@ -1,0 +1,4 @@
+# generated daily cache + bytecode — not source
+data/
+__pycache__/
+*.pyc
