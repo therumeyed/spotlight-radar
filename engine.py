@@ -20,10 +20,11 @@ import re
 import urllib.request
 
 import sources
+import store
 
 MODEL = os.environ.get("RADAR_MODEL", os.environ.get("ASSISTANT_MODEL", "claude-haiku-4-5-20251001"))
 _DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-_REPORTS = os.path.join(_DATA, "reports")
+_CACHE = os.path.join(_DATA, "daily.json")
 
 
 # --------------------------------------------------------------- collect -------
@@ -256,22 +257,25 @@ def build_radar():
     }
 
 
-def _report_path(date_str):
-    return os.path.join(_REPORTS, "%s.json" % date_str)
-
-
-def _load_report(date_str):
+def _load_today_cache():
+    """This process's own same-day cache — NOT the history archive. Purely to
+    avoid rebuilding (and re-billing Apify) on every request within one day
+    when no database is configured; overwritten daily, never read for a past
+    date. The durable, cross-restart archive is store.py (Postgres)."""
     try:
-        with open(_report_path(date_str)) as f:
-            return json.load(f)
+        with open(_CACHE) as f:
+            cached = json.load(f)
+        if cached.get("date") == _dt.date.today().isoformat():
+            return cached
     except (OSError, ValueError):
-        return None
+        pass
+    return None
 
 
-def _save_report(date_str, result):
+def _save_today_cache(result):
     try:
-        os.makedirs(_REPORTS, exist_ok=True)
-        with open(_report_path(date_str), "w") as f:
+        os.makedirs(_DATA, exist_ok=True)
+        with open(_CACHE, "w") as f:
             json.dump(result, f, indent=1)
     except OSError:
         pass
@@ -279,29 +283,33 @@ def _save_report(date_str, result):
 
 def get_report(date_str):
     """A specific past day's report, exactly as generated — never regenerates,
-    so a historical read's ideas and examples stay stable. None if not saved."""
-    return _load_report(date_str)
+    so a historical read's ideas and examples stay stable. Backed by Postgres
+    (store.py) — the only durable copy, since Render's free-tier disk does not
+    survive redeploys. None if not saved, or if no database is configured."""
+    return store.load(date_str, sources.TOPIC, sources.GEO)
 
 
 def available_dates(year, month):
     """ISO dates in this year/month that have a saved report, for the history
-    calendar — this must never have to read every historical report to answer."""
-    try:
-        names = os.listdir(_REPORTS)
-    except OSError:
-        return []
+    calendar. Empty (not an error) when DATABASE_URL isn't configured."""
     prefix = "%04d-%02d-" % (year, month)
-    return sorted(n[:-5] for n in names if n.startswith(prefix) and n.endswith(".json"))
+    return sorted(d for d in store.list_dates(sources.TOPIC, sources.GEO) if d.startswith(prefix))
 
 
 def daily(force=False):
-    """Today's radar, cached to one build per day (unless forced) and persisted
-    so it can be reloaded later from History without regenerating."""
+    """Today's radar. Checked in order: Postgres (survives restarts/redeploys,
+    when configured), then this process's own same-day cache, then a fresh
+    build — saved to both so today's read doesn't get rebuilt (and re-billed)
+    on every request even before the database copy exists."""
     today = _dt.date.today().isoformat()
     if not force:
-        cached = _load_report(today)
+        stored = store.load(today, sources.TOPIC, sources.GEO)
+        if stored:
+            return stored
+        cached = _load_today_cache()
         if cached:
             return cached
     result = build_radar()
-    _save_report(today, result)
+    store.save(today, sources.TOPIC, sources.GEO, result)
+    _save_today_cache(result)
     return result

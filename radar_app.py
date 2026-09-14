@@ -8,10 +8,10 @@ Then open http://localhost:8000
 Endpoints:
     GET  /api/radar     today's radar (5 ideas + ranked trends + raw signals), cached daily
     POST /api/refresh   force a fresh build for today
-    GET  /api/health    liveness + whether Apify is configured (live vs sample)
+    GET  /api/health    liveness + whether Apify/history storage are configured (live vs sample)
 
-Self-contained — imports only `engine`/`sources` in this folder, so the whole
-`radar/` directory ports cleanly into another dashboard.
+Self-contained — imports only `engine`/`sources`/`store` in this folder, so
+the whole directory ports cleanly into another dashboard.
 """
 import datetime as _dt
 import os
@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 
 import engine
 import sources
+import store
 
 app = FastAPI(title="The Radar — daily social trend discovery")
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -30,7 +31,8 @@ WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 @app.get("/api/health")
 def health():
     return {"status": "ok", "apify": sources.live(),
-            "ai": bool(os.environ.get("ANTHROPIC_API_KEY")), "topic": sources.TOPIC}
+            "ai": bool(os.environ.get("ANTHROPIC_API_KEY")), "topic": sources.TOPIC,
+            "history_persistent": store.enabled()}
 
 
 @app.get("/api/radar")
