@@ -23,6 +23,7 @@ since neither platform has a free public trend API.
 The topic is Google Trends /m/01mrgs == "Craft". Everything is overridable via
 env vars, so the same code runs any topic/category later.
 """
+import base64
 import datetime as _dt
 import http.cookiejar
 import json
@@ -51,9 +52,24 @@ INSTAGRAM_ACTOR = os.environ.get("APIFY_INSTAGRAM_ACTOR", "apify~instagram-hasht
 _TIMEOUT        = float(os.environ.get("APIFY_RUN_TIMEOUT", "120"))
 _TRENDS_TIMEOUT = float(os.environ.get("TRENDS_TIMEOUT", "8"))    # short: never stall a daily read
 
-# seed hashtags/keywords we scan on the social platforms (topline: a small set)
+# ---- DataForSEO (optional) — a paid, reliable Google Trends source. When
+# configured, it replaces the free scrape below (which Google rate-limits hard
+# from cloud/datacenter IPs); without it, nothing changes. Its "live" endpoint
+# genuinely takes 10-15s to answer (DataForSEO runs it synchronously against
+# Google on request) — a much longer budget than the free scrape needs, so it
+# gets its own timeout rather than sharing TRENDS_TIMEOUT.
+DATAFORSEO_LOGIN    = os.environ.get("DATAFORSEO_LOGIN", "").strip()
+DATAFORSEO_PASSWORD = os.environ.get("DATAFORSEO_PASSWORD", "").strip()
+_DATAFORSEO_TIMEOUT = float(os.environ.get("DATAFORSEO_TIMEOUT", "25"))
+
+# seed hashtags/keywords we scan on the social platforms — the widest practical
+# net for one daily crawl: more keywords here means more trend clusters end up
+# with a real crawled post attached, which is what actually clears the
+# evidence-only bar in build_radar() (Google Trends signals alone never do).
 KEYWORDS = [k.strip() for k in os.environ.get(
-    "RADAR_KEYWORDS", "crafts,craftok,diy crafts,craft ideas").split(",") if k.strip()]
+    "RADAR_KEYWORDS",
+    "crafts,craftok,diy crafts,craft ideas,handmade,craft tutorial,"
+    "craft hack,easy crafts,craft diy,crafting").split(",") if k.strip()]
 
 
 def token():
@@ -135,6 +151,7 @@ def _example(source, url, title, author, published_at, metric_label):
 # Google rate-limits this hard from cloud/datacenter IPs, so a 429 trips a
 # process-wide circuit breaker and we fall back to real Google News coverage
 # instead of hammering a blocked endpoint. Sample data is the last resort.
+# DataForSEO, when configured (see below), takes priority over all of this.
 _TRENDS_API = "https://trends.google.com/trends/api"
 _trends_blocked = False
 
@@ -238,11 +255,48 @@ def _news_rising(topic, keywords, k=5):
             for term, n in top]
 
 
+# DataForSEO location_name lookup for the geos this project has actually used;
+# extend as needed. Falls back to "Australia" (today's only market) rather
+# than guessing at an unmapped ISO code.
+_DATAFORSEO_LOCATIONS = {"AU": "Australia", "US": "United States", "GB": "United Kingdom"}
+
+
+def _dataforseo_rising(query, geo=GEO):
+    """Rising related queries for `query`, via DataForSEO's Google Trends Explore
+    (live) endpoint — a paid, reliable stand-in for the free endpoint below, which
+    Google rate-limits hard from cloud/datacenter IPs. None if not configured or
+    on any failure, so the caller falls through to the free path unaffected."""
+    if not (DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD):
+        return None
+    auth = base64.b64encode(("%s:%s" % (DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD)).encode()).decode()
+    body = json.dumps([{
+        "keywords": [query],
+        "location_name": _DATAFORSEO_LOCATIONS.get(geo, "Australia"),
+        "time_range": "past_7_days",
+        "item_types": ["google_trends_queries_list"],
+    }]).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.dataforseo.com/v3/keywords_data/google_trends/explore/live",
+        data=body, headers={"Authorization": "Basic %s" % auth, "content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=_DATAFORSEO_TIMEOUT) as r:
+            data = json.loads(r.read())
+        result = (data.get("tasks") or [{}])[0].get("result") or [{}]
+        items = (result[0] or {}).get("items") or []
+        queries = next((it for it in items if it.get("type") == "google_trends_queries_list"), None)
+        rising = (queries or {}).get("data", {}).get("rising") or []
+        return [{"query": rq.get("query"), "value": rq.get("value"), "formattedValue": None}
+                for rq in rising if rq.get("query")] or None
+    except Exception:
+        return None
+
+
 def google_trends():
-    """Rising related queries for the topic. Free Google Trends first (no
-    Apify, no cost); falls back to real Google News coverage when Trends is
-    rate-limited; sample data only if both are unreachable."""
-    rising = _trends_rising(TOPIC)
+    """Rising related queries for the topic. DataForSEO first when configured
+    (paid, reliable); else the free Google Trends endpoint (no Apify, no cost);
+    falls back to real Google News coverage when Trends is rate-limited; sample
+    data only if all of the above are unreachable."""
+    rising = _dataforseo_rising(TOPIC) or _trends_rising(TOPIC)
     out = []
     for rq in rising or []:
         term = rq.get("query") or ""
@@ -266,8 +320,8 @@ def tiktok():
     recent reach into per-tag velocity signals. Falls back to sample."""
     seen = {}
     if live():
-        for kw in KEYWORDS[:3]:
-            for it in _run(TIKTOK_ACTOR, {"query": kw, "region": GEO, "max_results": 20,
+        for kw in KEYWORDS[:6]:
+            for it in _run(TIKTOK_ACTOR, {"query": kw, "region": GEO, "max_results": 30,
                                           "sort_by": "relevance"}):
                 info = it.get("aweme_info") or it
                 stats = info.get("statistics") or info.get("stats") or {}
@@ -311,8 +365,8 @@ def instagram():
     hashtags by recent engagement into velocity signals. Falls back to sample."""
     seen = {}
     if live():
-        for tag in [k.replace(" ", "") for k in KEYWORDS[:2]]:
-            for it in _run(INSTAGRAM_ACTOR, {"hashtags": [tag], "resultsLimit": 40}):
+        for tag in [k.replace(" ", "") for k in KEYWORDS[:5]]:
+            for it in _run(INSTAGRAM_ACTOR, {"hashtags": [tag], "resultsLimit": 60}):
                 likes = int(_num(it.get("likesCount") or it.get("likes") or 0))
                 comments = int(_num(it.get("commentsCount") or it.get("comments") or 0))
                 eng = likes + 3 * comments

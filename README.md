@@ -26,21 +26,34 @@ badge. Add the keys below and it goes **live**.
 
 | Variable | What it does | Default |
 |---|---|---|
-| `APIFY_API_KEY` | Turns on live data (Google Trends + TikTok + Instagram via Apify). | — (sample mode) |
+| `APIFY_API_KEY` | Turns on live TikTok + Instagram data via Apify. | — (sample mode) |
+| `DATAFORSEO_LOGIN` / `DATAFORSEO_PASSWORD` | Turns on DataForSEO for Google Trends (paid, reliable) instead of the free scrape below. | — (free scrape) |
 | `ANTHROPIC_API_KEY` | Writes the 5 ideas with Claude; without it, a grounded rule-based fallback is used. | — (rules) |
+| `DATABASE_URL` | A Postgres connection string — turns on the History calendar (past days survive restarts/redeploys). | — (no history) |
 | `RADAR_TOPIC` | The topic label. | `crafts` |
 | `RADAR_TOPIC_MID` | Google Trends topic id. | `/m/01mrgs` (Craft) |
 | `RADAR_GEO` | Region. | `AU` |
-| `RADAR_KEYWORDS` | Seed hashtags/keywords to scan socially. | `crafts,craftok,diy crafts,craft ideas` |
+| `RADAR_KEYWORDS` | Seed hashtags/keywords to scan socially. | `crafts,craftok,diy crafts,craft ideas,handmade,craft tutorial,craft hack,easy crafts,craft diy,crafting` |
 | `APIFY_TIKTOK_ACTOR` | Apify actor id for TikTok. | `sociavault~tiktok-keyword-search-scraper` |
 | `APIFY_INSTAGRAM_ACTOR` | Apify actor id for Instagram. | `apify~instagram-hashtag-scraper` |
-| `APIFY_TRENDS_ACTOR` | Apify actor id for Google Trends. | `emastra~google-trends-scraper` |
 
-> **Note on the Apify actors:** the Instagram and Google Trends actor input/output shapes
-> vary between actors, so the parsers in `sources.py` are deliberately defensive — when
-> you plug in your real key, sanity-check one live run and tweak the field mapping there
-> if a chosen actor returns different keys. (Google is used via Apify on purpose: Google
-> 429s direct server access to Trends.)
+> **Note on the Apify actors:** actor input/output shapes vary between actors, so the
+> parsers in `sources.py` are deliberately defensive — when you plug in your real key,
+> sanity-check one live run and tweak the field mapping there if a chosen actor returns
+> different keys.
+
+**Google Trends:** DataForSEO first when `DATAFORSEO_LOGIN`/`DATAFORSEO_PASSWORD` are set
+— a paid, reliable source (Basic Auth, login+password from your DataForSEO account).
+Otherwise it hits the same free, unofficial endpoint pytrends uses; Google rate-limits
+that hard from cloud/datacenter IPs, so a 429 trips a circuit breaker and falls back to
+real Google News coverage, then to sample data only if nothing is reachable.
+
+**On idea volume:** in live mode, an idea only ever appears once it has a real crawled
+post behind it — and only TikTok/Instagram signals can carry that, Google Trends signals
+never can (see "Evidence" below). So the lever for more recommendations a day is wider
+TikTok/Instagram coverage (`RADAR_KEYWORDS`, and the result caps in `sources.py`), not the
+Trends source — DataForSEO makes Trends data more reliable, it doesn't by itself raise
+idea count.
 
 ## How it works
 
@@ -49,11 +62,13 @@ sources.py   → pulls raw signals + one real representative crawled post per si
                 (fail-soft; sample fallback; never fabricates a post/url/author/metric)
 engine.py    → collect → rank_trends (define "trending") → make_ideas (Claude/rules),
                 suppresses any live idea with no real example behind it → persists daily
+store.py     → optional Postgres history archive (no-op without DATABASE_URL) — the
+                durable copy; survives restarts/redeploys
 radar_app.py → FastAPI: today's radar, history, a specific past day, health, dashboard
 web/         → the dashboard (index.html, app.js, styles.css) — History as an overlay
                 calendar, not a page section; no user-facing refresh/regenerate control
-data/reports/ → one JSON file per date (YYYY-MM-DD.json), so History reloads a past
-                day's exact original ideas/examples rather than regenerating them
+data/        → this instance's own same-day cache only (daily.json) — not the history
+                archive; Postgres is what actually survives a redeploy
 ```
 
 **"Trending" (our definition):** a sub-topic is trending when it shows recent momentum
@@ -79,7 +94,10 @@ says so explicitly instead of showing a fake post.
 ## Deploying
 
 `Dockerfile` builds a standalone image (`pip install -r requirements.txt`, then
-`uvicorn radar_app:app`). On Render specifically: **the app's daily report history
-(`data/reports/`) needs a persistent disk to survive a redeploy or instance spin-down** —
-Render's free plan has no persistent disk, so History will only last for the lifetime of
-a single running instance on that plan.
+`uvicorn radar_app:app`). On Render specifically: **add a Postgres database and set
+`DATABASE_URL` on this service** — Render's disk does not survive a redeploy or instance
+spin-down, so without a database, History only lasts for the lifetime of a single running
+instance. Render dashboard → New + → PostgreSQL → create a small database → copy its
+Internal Database URL → this service's Environment → add `DATABASE_URL` → save (triggers
+a redeploy). With no `DATABASE_URL` set, the app still runs — no history, one day's build
+cached locally, and the calendar shows a "no history yet" message instead of erroring.

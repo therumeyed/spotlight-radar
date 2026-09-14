@@ -1,4 +1,7 @@
 fastapi>=0.110
 uvicorn>=0.29
-# Everything else (Apify + Claude calls, JSON, scoring) uses the Python standard
-# library only — so this folder ports cleanly with almost no dependencies.
+psycopg[binary]>=3.1
+# psycopg is the only non-stdlib dependency beyond the web framework, and it's
+# only used at all when DATABASE_URL is set (store.py) — for the daily history
+# archive. Everything else (Apify + DataForSEO + Claude calls, JSON, scoring)
+# is the Python standard library only.
