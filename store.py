@@ -14,6 +14,7 @@ One table, one job: radar_history(date, topic, geo, data). "date" + "topic" +
 later doesn't collide with older history under a different topic.
 """
 import json
+import logging
 import os
 
 try:
@@ -21,7 +22,19 @@ try:
 except ImportError:
     psycopg = None
 
+_log = logging.getLogger(__name__)
 _URL = os.environ.get("DATABASE_URL", "").strip()
+
+if not _URL:
+    _log.warning(
+        "DATABASE_URL is not set: history persistence is DISABLED. Daily reports "
+        "are kept only in this process's local same-day cache, not saved anywhere "
+        "durable — a restart or redeploy loses all history. Do not treat History "
+        "as reliable until DATABASE_URL is configured.")
+elif psycopg is None:
+    _log.warning(
+        "DATABASE_URL is set but the psycopg driver is not installed: history "
+        "persistence is DISABLED. Check requirements.txt / the deploy build.")
 
 
 def enabled():
