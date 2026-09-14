@@ -21,16 +21,6 @@
     catch (e) { return ""; }
   }
 
-  function timeAgo(iso) {
-    if (!iso) return "";
-    const then = new Date(iso).getTime();
-    if (Number.isNaN(then)) return "";
-    const days = Math.floor((Date.now() - then) / 86400000);
-    if (days <= 0) return "Today";
-    if (days === 1) return "Yesterday";
-    return `${days}d ago`;
-  }
-
   // ---------------------------------------------------------------- state --
   const state = { report: null, visibleYear: null, visibleMonth: null, activeFilter: "All" };
 
@@ -40,7 +30,7 @@
     if (ex) {
       const icon = SRC_ICON[ex.example_source] || ex.example_source.slice(0, 2).toUpperCase();
       return `<aside class="proof">
-        <div class="proof-label"><span class="eyebrow">Example from the crawl</span><span class="muted">${esc(timeAgo(ex.example_published_at))}</span></div>
+        <div class="proof-label"><span class="eyebrow">Example from the crawl</span></div>
         <div class="proof-source">
           <div class="source-icon ${esc(ex.example_source)}">${esc(icon)}</div>
           <div style="min-width:0">
