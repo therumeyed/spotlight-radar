@@ -261,18 +261,20 @@ def _news_rising(topic, keywords, k=5):
 _DATAFORSEO_LOCATIONS = {"AU": "Australia", "US": "United States", "GB": "United Kingdom"}
 
 
-def _dataforseo_rising(query, geo=GEO):
+def _dataforseo_rising(query, geo=GEO, time_range="past_7_days"):
     """Rising related queries for `query`, via DataForSEO's Google Trends Explore
     (live) endpoint — a paid, reliable stand-in for the free endpoint below, which
     Google rate-limits hard from cloud/datacenter IPs. None if not configured or
-    on any failure, so the caller falls through to the free path unaffected."""
+    on any failure, so the caller falls through to the free path unaffected.
+    time_range accepts DataForSEO's documented values (past_hour, past_4_hours,
+    past_day, past_7_days, past_30_days, past_90_days, past_12_months, past_5_years)."""
     if not (DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD):
         return None
     auth = base64.b64encode(("%s:%s" % (DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD)).encode()).decode()
     body = json.dumps([{
         "keywords": [query],
         "location_name": _DATAFORSEO_LOCATIONS.get(geo, "Australia"),
-        "time_range": "past_7_days",
+        "time_range": time_range,
         "item_types": ["google_trends_queries_list"],
     }]).encode("utf-8")
     req = urllib.request.Request(
@@ -563,3 +565,42 @@ def trend_corroboration(topic):
     canon_topic = re.sub(r"[^a-z]", "", topic.lower())
     corroborated = any(canon_topic and canon_topic in re.sub(r"[^a-z]", "", t) for t in terms)
     return {"corroborated": corroborated, "rising_terms": terms[:10]}
+
+
+def rising_query_candidates(themes, time_range="past_day"):
+    """Layer 1 of the trend tracker's discovery: for each seed theme, pull
+    Google's own Rising Queries (via DataForSEO) over `time_range` -- one
+    DataForSEO task per theme ($0.0012 each, negligible next to a social
+    crawl), and it's Google's own trend detection doing the wide-net work
+    instead of a hand-maintained seed list. This layer only ever surfaces
+    CANDIDATES with a search-interest signal attached -- it never claims a
+    post count; that's what the social tracker (Layer 2, trends.py/
+    tracker.py) is for once a candidate is promoted.
+
+    A DataForSEO rising-query "value" of >= 5000 is Google's own convention
+    for "Breakout" (confirmed against the existing google_trends() parsing);
+    below that, value is a roughly-percentage growth figure.
+
+    Returns a deduplicated list of {"term", "breakout", "growth_pct"} across
+    all themes -- the strongest signal kept if the same term rises under more
+    than one seed theme -- filtered through BLOCKED_SEARCH_INTENT the same
+    way corroboration is. [] (not None) if DataForSEO isn't configured or
+    every lookup fails, so a caller can iterate it unconditionally."""
+    best = {}
+    for theme in themes:
+        rising = _dataforseo_rising(theme, time_range=time_range)
+        if not rising:
+            continue
+        for rq in rising:
+            term = (rq.get("query") or "").strip().lower()
+            if not term or is_blocked_search_intent(term):
+                continue
+            val = _num(rq.get("value") or 0)
+            breakout = val >= 5000
+            growth_pct = None if breakout else val
+            prev = best.get(term)
+            stronger = prev is None or (breakout and not prev["breakout"]) or (
+                not breakout and not prev["breakout"] and (growth_pct or 0) > (prev["growth_pct"] or 0))
+            if stronger:
+                best[term] = {"term": term, "breakout": breakout, "growth_pct": growth_pct}
+    return list(best.values())

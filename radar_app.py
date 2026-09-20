@@ -52,12 +52,14 @@ def health():
                                 "auto_track_count": scheduler.AUTO_TRACK_COUNT,
                                 "auto_track_max": scheduler.AUTO_TRACK_MAX,
                                 "discovery_interval_hours": scheduler.DISCOVERY_INTERVAL_HOURS,
+                                "rising_query_min_growth_pct": scheduler.RISING_QUERY_MIN_GROWTH_PCT,
+                                "rising_query_candidates": len(scheduler._discovery_cache.get("rising", [])),
                                 "discovery_last_run": (scheduler._discovery_cache["at"].isoformat()
                                                         if scheduler._discovery_cache["at"] else None),
                                 "estimated_daily_cost_usd": (scheduler.estimate_daily_cost_usd()
                                                               if scheduler.ENABLED else 0.0),
-                                "estimated_cost_note": ("Apify only, worst-case (assumes every crawl "
-                                                         "hits its cap) — not real billing data")}}
+                                "estimated_cost_note": ("Apify + DataForSEO, worst-case (assumes every "
+                                                         "crawl hits its cap) — not real billing data")}}
 
 
 @app.get("/api/trends")

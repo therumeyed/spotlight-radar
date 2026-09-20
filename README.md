@@ -49,7 +49,8 @@ badge. Add the keys below and it goes **live**.
 | `TREND_EMERGING_MIN_POSTS` / `TREND_EMERGING_MIN_CREATORS` / `TREND_EMERGING_MIN_GROWTH_PCT` | Thresholds for the "Emerging" classification — posts, DISTINCT creators (anti-gaming), growth %. | `5` / `3` / `50` |
 | `TREND_COOLING_MAX_GROWTH_PCT` | Growth % at or below which a topic is classified "Cooling". | `-20` |
 | `TREND_DISCOVERY_INTERVAL_HOURS` | How often auto-discovery re-crawls the broad seed searches for new candidates. | `24` |
-| `TREND_DISCOVERY_MIN_SCORE` | Minimum rank_trends() score for a discovered candidate to qualify for auto-tracking. | `0.5` |
+| `TREND_DISCOVERY_MIN_SCORE` | Minimum rank_trends() score for a Layer 1b (social-hashtag) candidate to qualify. | `0.5` |
+| `TREND_RISING_QUERY_MIN_GROWTH_PCT` | Minimum Google Trends growth % for a Layer 1 (rising-query) candidate to qualify (Breakout always qualifies). | `20` |
 
 > **Note on the Apify actors:** actor input/output shapes vary between actors, so the
 > parsers in `sources.py` are deliberately defensive — when you plug in your real key,
@@ -176,27 +177,46 @@ score.
 
 **Which topics get tracked** is decided fresh every crawl cycle, not fixed once: it's
 the union of any manual pins (`TREND_TRACK_TOPICS`, optional), today's top
-`TREND_AUTO_TRACK_COUNT` *qualified* candidates from `engine.discover_trends()`, and
-anything still within `TREND_TOPIC_RETENTION_DAYS` of its last crawl even if it dropped
-out of today's top picks — so a fading trend gets to show "Cooling" instead of just
-vanishing. The total tracked set is capped at `TREND_AUTO_TRACK_MAX` regardless, so cost
-stays bounded no matter how much discovery churns.
+`TREND_AUTO_TRACK_COUNT` *qualified* candidates from two discovery layers, and anything
+still within `TREND_TOPIC_RETENTION_DAYS` of its last crawl even if it dropped out of
+today's top picks — so a fading trend gets to show "Cooling" instead of just vanishing.
+The total tracked set is capped at `TREND_AUTO_TRACK_MAX` regardless, so cost stays
+bounded no matter how much discovery churns.
 
-`discover_trends()` runs broad seed searches (`RADAR_KEYWORDS` — already "crafts,
-craftok, diy crafts, craft ideas, handmade, ..." by default), clusters the recurring
-hashtags/phrases those searches surface, merges in DataForSEO/Google Trends rising
-queries, and scores the result — the same `collect()` + `rank_trends()` pipeline the
-dashboard's own ideas already use, just called independently of the once-per-calendar-
-day report cache. A candidate "qualifies" for auto-tracking once its score clears
-`TREND_DISCOVERY_MIN_SCORE`. This refreshes on its own cadence
-(`TREND_DISCOVERY_INTERVAL_HOURS`, default once/day) — deliberately decoupled from the
-per-topic tracking cadence (`TREND_CRAWL_INTERVAL_HOURS`, default every 12h), because
-running a full discovery crawl every 12h instead of once/day roughly doubles the
-aggregate-crawl cost (see Deploying below). Set them equal for genuinely
-every-scheduled-run discovery if that's worth the extra spend to you. Discovery only
-ever runs from the scheduler's own background loop, never from an incoming request —
-`/api/health`/`/api/trends` only ever read whatever was last discovered, so a slow live
-crawl can't make a health check look like the service is down.
+**Layered discovery — Google Trends decides what's worth checking; the social crawl
+only ever confirms it.** Two channels feed the candidate pool, both refreshed together
+on the same cadence (see below):
+
+1. **Rising-query discovery (primary)** — `sources.rising_query_candidates()` pulls
+   Google's own Rising Queries (via DataForSEO), one call per `RADAR_KEYWORDS` seed
+   theme, `past_day` window — literally the same panel as Google Trends Explore's UI.
+   One DataForSEO task per seed theme (~$0.0012 each — ten seed themes costs about a
+   cent a day), so it's cheap enough to check broadly without a hand-maintained list of
+   sub-categories: Google's own trend detection does that work. A candidate qualifies by
+   being flagged **Breakout**, or clearing `TREND_RISING_QUERY_MIN_GROWTH_PCT` (default
+   `20`) growth. This channel fills `TREND_AUTO_TRACK_COUNT` slots first.
+2. **Social-hashtag discovery (fallback/supplement)** — `engine.discover_trends()`, the
+   original mechanism: broad TikTok/Instagram seed searches clustered into recurring
+   hashtags, same `collect()` + `rank_trends()` pipeline the dashboard's own ideas use,
+   qualifying at `TREND_DISCOVERY_MIN_SCORE`. Fills whatever slots the rising-query
+   channel didn't — catches something trending socially before it shows up in Google
+   search volume, which the rising-query channel alone can't see.
+
+Either way, a discovered candidate is just that — a candidate. Nothing is claimed about
+its actual post velocity until it's promoted into tracking and gets a real TikTok crawl,
+same as any manually pinned topic. This is the layering: Google Trends tells you what's
+worth checking, cheaply and broadly; the social tracker is what actually checks it.
+
+Both channels refresh on the same cadence (`TREND_DISCOVERY_INTERVAL_HOURS`, default
+once/day) — deliberately decoupled from the per-topic tracking cadence
+(`TREND_CRAWL_INTERVAL_HOURS`, default every 12h), because running the social-hashtag
+discovery crawl that often would roughly double the aggregate-crawl cost (the
+rising-query channel's own cost is negligible at any cadence). Set them equal for
+genuinely every-scheduled-run discovery if that's worth the extra spend to you.
+Discovery only ever runs from the scheduler's own background loop, never from an
+incoming request — `/api/health`/`/api/trends` only ever read whatever was last
+discovered, so a slow live crawl can't make a health check look like the service is
+down.
 
 **Discovered candidates are screened before they can ever be tracked.** A candidate
 whose term matches reference-lookup/dictionary-site search intent — crossword, puzzle,

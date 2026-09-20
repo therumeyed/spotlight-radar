@@ -14,26 +14,42 @@ WHICH topics get tracked is decided fresh every cycle by select_topics(),
 not a fixed list set once: it's the union of
 
   1. TREND_TRACK_TOPICS -- an optional manual pin list, always tracked.
-  2. Today's top TREND_AUTO_TRACK_COUNT QUALIFIED candidates from
-     engine.discover_trends() -- broad seed searches (RADAR_KEYWORDS, which
-     already includes "crafts", "diy crafts", "handmade", "craft ideas")
-     clustered into recurring hashtags/phrases, corroborated by DataForSEO/
-     Google Trends rising queries, same as the dashboard's own trend
-     detection. A candidate "qualifies" by clearing TREND_DISCOVERY_MIN_SCORE.
-     This crawl runs on its OWN cadence (TREND_DISCOVERY_INTERVAL_HOURS,
-     cached in-process between calls) -- deliberately decoupled from the
-     per-topic tracking cadence below, since running a full discovery crawl
-     that often would roughly double the aggregate-crawl cost. Defaults to
-     once/day (matching what this crawl already cost before any of this
-     existed); set it equal to TREND_CRAWL_INTERVAL_HOURS for genuinely
+  2. Layer 1: today's top TREND_AUTO_TRACK_COUNT QUALIFIED candidates from
+     sources.rising_query_candidates() -- Google's own Rising Queries (via
+     DataForSEO), pulled once per RADAR_KEYWORDS seed theme, past_day
+     window. Near-free (one DataForSEO task per seed theme) and it's
+     Google's own trend detection doing the wide-net work, not a hand-
+     maintained seed list. A candidate qualifies by being flagged Breakout,
+     or clearing TREND_RISING_QUERY_MIN_GROWTH_PCT. This is the PRIMARY
+     discovery channel -- tried first, fills as many of the
+     TREND_AUTO_TRACK_COUNT slots as it can.
+  2b. Layer 1b (fallback/supplement): engine.discover_trends() -- the
+     broader social-hashtag-clustering discovery (same RADAR_KEYWORDS,
+     clustered TikTok/Instagram signals). Fills any TREND_AUTO_TRACK_COUNT
+     slots the rising-query channel didn't -- catches something trending
+     socially before it shows up in Google search volume. A candidate
+     qualifies by clearing TREND_DISCOVERY_MIN_SCORE.
+     Both channels refresh together on the SAME cadence
+     (TREND_DISCOVERY_INTERVAL_HOURS, cached in-process between calls) --
+     deliberately decoupled from the per-topic tracking cadence below,
+     since running the social discovery crawl that often would roughly
+     double the aggregate-crawl cost (the rising-query channel itself is
+     cheap enough that its own cadence barely matters). Defaults to
+     once/day; set it equal to TREND_CRAWL_INTERVAL_HOURS for genuinely
      every-scheduled-run discovery if the extra spend is worth it to you.
   3. Anything already accumulating history within TREND_TOPIC_RETENTION_DAYS
      -- so a topic that drops out of today's top picks still gets a few
      more crawls to show its real trajectory (including cooling) instead of
      vanishing mid-story the moment it's no longer today's top pick.
 
+Layer 2, where a candidate actually gets confirmed, is unchanged: whatever
+gets selected here goes through the same real TikTok/Instagram crawl,
+post-ID dedup, creator-diversity gate and classification as any other
+tracked topic -- this module only ever decides WHAT to check, never
+substitutes for actually checking it.
+
 ...capped at TREND_AUTO_TRACK_MAX total, so cost stays bounded regardless of
-how much the daily top-N churns or how long the retention window is.
+how much the daily candidates churn or how long the retention window is.
 
 Off by default. Needs TREND_TRACKING_ENABLED=true and DATABASE_URL; topics
 resolve on their own from there (TREND_TRACK_TOPICS is optional, not required).
@@ -57,6 +73,7 @@ AUTO_TRACK_MAX         = int(os.environ.get("TREND_AUTO_TRACK_MAX", "5"))
 TOPIC_RETENTION_DAYS  = float(os.environ.get("TREND_TOPIC_RETENTION_DAYS", "5"))
 DISCOVERY_INTERVAL_HOURS = float(os.environ.get("TREND_DISCOVERY_INTERVAL_HOURS", "24"))
 DISCOVERY_MIN_SCORE      = float(os.environ.get("TREND_DISCOVERY_MIN_SCORE", "0.5"))
+RISING_QUERY_MIN_GROWTH_PCT = float(os.environ.get("TREND_RISING_QUERY_MIN_GROWTH_PCT", "20"))
 ENABLED = os.environ.get("TREND_TRACKING_ENABLED", "").strip().lower() in ("1", "true", "yes")
 
 # Topics that must never be auto-selected (discovered OR retained), by exact
@@ -70,7 +87,7 @@ EXCLUDED_TOPICS = {t.strip().lower() for t in
                    os.environ.get("TREND_EXCLUDED_TOPICS", "craft online").split(",") if t.strip()}
 
 _stop = threading.Event()
-_discovery_cache = {"trends": [], "at": None}
+_discovery_cache = {"rising": [], "trends": [], "at": None}
 
 
 def _discovery_due():
@@ -81,22 +98,27 @@ def _discovery_due():
 
 
 def _refresh_discovery_if_due():
-    """Re-run trend discovery (a real Apify/DataForSEO crawl, potentially
-    slow) if the cached result is due for a refresh. ONLY ever called from
-    the scheduler's own background loop -- never from a request handler.
-    Render's own health checks poll /api/health, and select_topics() (below)
-    is called from there; if IT triggered this, a health check could block
-    for however long a live crawl takes and read as the service being down.
-    In-process only: a redeploy resets this cache, so the loop's first pass
-    after a restart refreshes immediately regardless of how recently one ran
-    before the restart -- same restart-safe trade-off as the rest of this
+    """Re-run both discovery channels (real Apify/DataForSEO spend,
+    potentially slow) if the cached result is due for a refresh. ONLY ever
+    called from the scheduler's own background loop -- never from a request
+    handler. Render's own health checks poll /api/health, and select_topics()
+    (below) is called from there; if IT triggered this, a health check could
+    block for however long a live crawl takes and read as the service being
+    down. In-process only: a redeploy resets this cache, so the loop's first
+    pass after a restart refreshes immediately regardless of how recently one
+    ran before the restart -- same restart-safe trade-off as the rest of this
     feature, worth knowing if redeploys are frequent."""
     if not _discovery_due():
         return
     try:
+        _discovery_cache["rising"] = sources.rising_query_candidates(sources.KEYWORDS)
+    except Exception:
+        _log.exception("trend scheduler: rising-query discovery failed")
+        _discovery_cache["rising"] = []
+    try:
         _discovery_cache["trends"] = engine.discover_trends()
     except Exception:
-        _log.exception("trend scheduler: discovery crawl failed")
+        _log.exception("trend scheduler: social discovery crawl failed")
         _discovery_cache["trends"] = []
     _discovery_cache["at"] = _dt.datetime.now(_dt.timezone.utc)
 
@@ -109,14 +131,23 @@ def select_topics():
 
     EXCLUDED_TOPICS and BLOCKED_SEARCH_INTENT are applied to auto-discovered
     and retained candidates, never to MANUAL_TOPICS -- an explicit pin is an
-    operator's deliberate choice and overrides both."""
+    operator's deliberate choice and overrides both. The rising-query channel
+    (Layer 1, primary) fills slots first; engine.discover_trends() (Layer 1b)
+    fills whatever's left -- see module docstring for why both exist."""
     auto = []
     if AUTO_TRACK_COUNT > 0:
-        qualified = [t["term"] for t in _discovery_cache["trends"] if t.get("term")
-                     and t.get("score", 0) >= DISCOVERY_MIN_SCORE
-                     and not sources.is_blocked_search_intent(t["term"])
-                     and t["term"].strip().lower() not in EXCLUDED_TOPICS]
-        auto = qualified[:AUTO_TRACK_COUNT]
+        rising_qualified = [c["term"] for c in _discovery_cache["rising"]
+                            if c["term"] not in EXCLUDED_TOPICS
+                            and (c["breakout"] or (c["growth_pct"] or 0) >= RISING_QUERY_MIN_GROWTH_PCT)]
+        social_qualified = [t["term"] for t in _discovery_cache["trends"] if t.get("term")
+                            and t.get("score", 0) >= DISCOVERY_MIN_SCORE
+                            and not sources.is_blocked_search_intent(t["term"])
+                            and t["term"].strip().lower() not in EXCLUDED_TOPICS]
+        merged = []
+        for t in rising_qualified + social_qualified:
+            if t not in merged:
+                merged.append(t)
+        auto = merged[:AUTO_TRACK_COUNT]
     retained = [t for t in trends.recently_tracked_topics(TOPIC_RETENTION_DAYS)
                 if t.strip().lower() not in EXCLUDED_TOPICS]
 
@@ -139,6 +170,8 @@ _INSTAGRAM_PRICE_PER_1K = 2.45
 # if those numbers change.
 _DISCOVERY_TIKTOK_RESULTS = 6 * 30
 _DISCOVERY_INSTAGRAM_RESULTS = 5 * 60
+# DataForSEO: one task per call regardless of result count within a task.
+_DATAFORSEO_PRICE_PER_CALL = 0.0012
 
 
 def estimate_daily_cost_usd():
@@ -163,7 +196,9 @@ def estimate_daily_cost_usd():
                                 + (_DISCOVERY_INSTAGRAM_RESULTS / 1000.0) * _INSTAGRAM_PRICE_PER_1K)
     discovery_cost = discovery_cost_per_crawl * discovery_crawls_per_day
 
-    return round(tracking_cost + discovery_cost, 2)
+    rising_query_cost = len(sources.KEYWORDS) * _DATAFORSEO_PRICE_PER_CALL * discovery_crawls_per_day
+
+    return round(tracking_cost + discovery_cost + rising_query_cost, 2)
 
 
 def _seconds_until_next_run(topics):
@@ -224,9 +259,10 @@ def start():
     start._started = True
     th = threading.Thread(target=_loop, name="trend-scheduler", daemon=True)
     th.start()
-    _log.info("trend scheduler: started (auto-track top %d @ score>=%.2f, max %d concurrent, "
+    _log.info("trend scheduler: started (auto-track top %d, max %d concurrent -- "
+              "Layer 1 rising-query breakout/growth>=%.0f%%, Layer 1b social score>=%.2f, "
               "%gd retention, crawl every %gh, discovery every %gh)",
-              AUTO_TRACK_COUNT, DISCOVERY_MIN_SCORE, AUTO_TRACK_MAX,
+              AUTO_TRACK_COUNT, AUTO_TRACK_MAX, RISING_QUERY_MIN_GROWTH_PCT, DISCOVERY_MIN_SCORE,
               TOPIC_RETENTION_DAYS, INTERVAL_HOURS, DISCOVERY_INTERVAL_HOURS)
 
 

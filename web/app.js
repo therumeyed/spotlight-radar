@@ -207,7 +207,7 @@
       const tt = h.trend_tracking || {};
       if (typeof tt.estimated_daily_cost_usd === "number") {
         $("trendCost").textContent =
-          `Est. Apify cost: ~$${tt.estimated_daily_cost_usd.toFixed(2)}/day (worst case — ${tt.estimated_cost_note || "not real billing data"})`;
+          `Est. cost: ~$${tt.estimated_daily_cost_usd.toFixed(2)}/day (worst case — ${tt.estimated_cost_note || "not real billing data"})`;
       }
     }).catch(() => {});
     fetch("/api/trends").then((r) => r.json()).then((data) => {
