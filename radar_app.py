@@ -34,7 +34,7 @@ import trends
 
 @asynccontextmanager
 async def _lifespan(app):
-    scheduler.start()   # no-op unless TREND_TRACKING_ENABLED + TREND_TRACK_TOPICS + DATABASE_URL are all set
+    scheduler.start()   # no-op unless TREND_TRACKING_ENABLED + DATABASE_URL are both set
     yield
 
 app = FastAPI(title="The Radar — daily social trend discovery", lifespan=_lifespan)
@@ -46,15 +46,21 @@ def health():
     return {"status": "ok", "apify": sources.live(),
             "ai": bool(os.environ.get("ANTHROPIC_API_KEY")), "topic": sources.TOPIC,
             "history_persistent": store.enabled(),
-            "trend_tracking": {"enabled": scheduler.ENABLED, "topics": scheduler.TRACKED_TOPICS,
-                                "interval_hours": scheduler.INTERVAL_HOURS}}
+            "trend_tracking": {"enabled": scheduler.ENABLED,
+                                "currently_tracked": scheduler.select_topics() if scheduler.ENABLED else [],
+                                "interval_hours": scheduler.INTERVAL_HOURS,
+                                "auto_track_count": scheduler.AUTO_TRACK_COUNT,
+                                "auto_track_max": scheduler.AUTO_TRACK_MAX}}
 
 
 @app.get("/api/trends")
 def trends_list():
-    """Every topic with at least one recorded snapshot, with its latest numbers."""
+    """Every topic with at least one recorded snapshot ever, with its latest
+    numbers, plus which of those are actually in this cycle's tracked set."""
     topics = trends.tracked_topics()
-    return {"tracking_enabled": scheduler.ENABLED, "topics": [trends.latest(t) for t in topics]}
+    current = set(scheduler.select_topics()) if scheduler.ENABLED else set()
+    return {"tracking_enabled": scheduler.ENABLED, "currently_tracked": sorted(current),
+            "topics": [trends.latest(t) for t in topics]}
 
 
 @app.get("/api/trends/{topic}")

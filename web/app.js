@@ -166,7 +166,7 @@
     </svg>`;
   }
 
-  function trendCard(topic, snap, history) {
+  function trendCard(topic, snap, history, isCurrent) {
     const cls = snap.classification;
     const growth = snap.growth_pct_24h;
     // A baseline classification means the backend itself doesn't trust this
@@ -175,13 +175,18 @@
     const growthText = (cls === "collecting_baseline" || growth == null) ? "—"
       : `${growth > 0 ? "+" : ""}${growth}%`;
     const gt = snap.google_trends;
-    const gtText = cls === "collecting_baseline"
-      ? "Still establishing a baseline — classification and growth firm up after a couple more crawls."
-      : gt ? (gt.corroborated ? "Google Trends agrees" : "Google Trends: no corroboration yet") : "";
+    let note = "";
+    if (!isCurrent) {
+      note = "No longer in the actively tracked set — showing its last known numbers.";
+    } else if (cls === "collecting_baseline") {
+      note = "Still establishing a baseline — classification and growth firm up after a couple more crawls.";
+    } else if (gt) {
+      note = gt.corroborated ? "Google Trends agrees" : "Google Trends: no corroboration yet";
+    }
     const links = (snap.sample_posts || []).slice(0, 3).map((p) =>
       `<a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">${esc(p.platform)}${p.creator ? " · @" + esc(p.creator) : ""}</a>`
     ).join(" · ");
-    return `<article class="trend-card">
+    return `<article class="trend-card${isCurrent ? "" : " trend-card--stale"}">
       <div class="trend-card-head"><strong>${esc(topic)}</strong>
         <span class="trend-badge trend-badge--${esc(cls)}">${esc(TREND_LABEL[cls] || cls)}</span></div>
       <div class="trend-stats">
@@ -191,7 +196,7 @@
         <div><strong>${snap.unique_creators_24h}</strong><span>unique creators</span></div>
       </div>
       ${sparkline(history)}
-      ${gtText ? `<p class="muted" style="font-size:12px;margin:2px 0">${esc(gtText)}</p>` : ""}
+      ${note ? `<p class="muted" style="font-size:12px;margin:2px 0">${esc(note)}</p>` : ""}
       ${links ? `<p class="trend-links">${links}</p>` : ""}
     </article>`;
   }
@@ -199,12 +204,15 @@
   function fetchTrends() {
     fetch("/api/trends").then((r) => r.json()).then((data) => {
       const topics = (data.topics || []).filter(Boolean);
+      const current = new Set(data.currently_tracked || []);
       $("trendTracker").hidden = topics.length === 0;
       if (!topics.length) return;
       Promise.all(topics.map((t) =>
         fetch(`/api/trends/${encodeURIComponent(t.topic)}?days=30`).then((r) => r.json())
       )).then((details) => {
-        $("trendCards").innerHTML = details.map((d) => trendCard(d.latest.topic, d.latest, d.history)).join("");
+        $("trendCards").innerHTML = details
+          .map((d) => trendCard(d.latest.topic, d.latest, d.history, current.has(d.latest.topic)))
+          .join("");
       });
     }).catch(() => { $("trendTracker").hidden = true; });
   }

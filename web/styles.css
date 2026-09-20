@@ -122,6 +122,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--purple); outlin
 .trend-tracker { margin-top: 24px; }
 .trend-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; margin-top: 12px; }
 .trend-card { background: var(--panel); border: 1px solid var(--line); border-radius: 13px; padding: 16px; }
+.trend-card--stale { opacity: .65; }
 .trend-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
 .trend-badge { font-size: 11px; font-weight: 600; letter-spacing: .02em; padding: 4px 9px; border-radius: 999px; white-space: nowrap; }
 .trend-badge--collecting_baseline { color: var(--subtle); background: var(--page); border: 1px solid var(--line); }

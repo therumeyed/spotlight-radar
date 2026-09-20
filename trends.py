@@ -269,10 +269,25 @@ def history(topic, days=30):
 
 
 def tracked_topics():
-    """Every topic that has at least one snapshot, for a summary listing."""
+    """Every topic that has at least one snapshot ever, for a summary listing."""
     if not enabled():
         return []
     with store._connect() as conn:
         _ensure_tables(conn)
         rows = conn.execute("SELECT DISTINCT topic FROM trend_snapshots ORDER BY topic").fetchall()
+    return [r[0] for r in rows]
+
+
+def recently_tracked_topics(days):
+    """Topics crawled within the last `days` days -- the scheduler's retention
+    window, so a topic that drops out of today's auto-selected top picks still
+    gets a few more crawls to show its actual trajectory (including cooling)
+    instead of vanishing mid-story the moment it's no longer today's top pick."""
+    if not enabled() or days <= 0:
+        return []
+    since = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)
+    with store._connect() as conn:
+        _ensure_tables(conn)
+        rows = conn.execute(
+            "SELECT DISTINCT topic FROM trend_snapshots WHERE crawled_at >= %s", (since,)).fetchall()
     return [r[0] for r in rows]

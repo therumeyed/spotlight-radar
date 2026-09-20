@@ -37,7 +37,10 @@ badge. Add the keys below and it goes **live**.
 | `APIFY_TIKTOK_ACTOR` | Apify actor id for TikTok. | `sociavault~tiktok-keyword-search-scraper` |
 | `APIFY_INSTAGRAM_ACTOR` | Apify actor id for Instagram. | `apify~instagram-hashtag-scraper` |
 | `TREND_TRACKING_ENABLED` | Turns on the longitudinal trend tracker (see below). | — (off) |
-| `TREND_TRACK_TOPICS` | Comma-separated topics/hashtags to track over time. Start with **one** for a pilot. | — (none) |
+| `TREND_TRACK_TOPICS` | Comma-separated topics/hashtags ALWAYS tracked, on top of auto-selection. Optional. | — (none) |
+| `TREND_AUTO_TRACK_COUNT` | How many of today's top discovered micro-trends to auto-track. | `3` |
+| `TREND_AUTO_TRACK_MAX` | Hard cap on total concurrently-tracked topics (manual + auto + retained). | `5` |
+| `TREND_TOPIC_RETENTION_DAYS` | Days a topic keeps getting crawled after it drops out of today's top picks. | `5` |
 | `TREND_CRAWL_INTERVAL_HOURS` | How often the tracker re-crawls each tracked topic. | `12` |
 | `TREND_TIKTOK_MAX_RESULTS` / `TREND_INSTAGRAM_MAX_RESULTS` | Per-platform result cap per crawl, per topic. | `50` / `50` |
 | `TREND_MIN_SNAPSHOTS` | Crawls needed before a topic can be classified (below this: "Collecting baseline"). | `2` |
@@ -81,8 +84,10 @@ tracker.py   → one crawl-and-snapshot cycle for one topic: pulls fresh posts,
                 merges into the ledger, records a snapshot. Never called from a
                 page request — only the scheduler or the manual ops trigger
 scheduler.py → in-process background loop that runs tracker.py on a fixed cadence
-                (default 12h). Off by default; needs TREND_TRACKING_ENABLED,
-                TREND_TRACK_TOPICS, and DATABASE_URL all set
+                (default 12h) against a topic set it re-selects every cycle
+                (today's top auto-discovered micro-trends + any manual pins +
+                anything still in its retention window). Off by default; needs
+                TREND_TRACKING_ENABLED and DATABASE_URL
 radar_app.py → FastAPI: today's radar, history, a specific past day, health, dashboard
 web/         → the dashboard (index.html, app.js, styles.css) — History as an overlay
                 calendar, not a page section; no user-facing refresh/regenerate control
@@ -125,8 +130,16 @@ Claude writes the 5 ideas, any tracked topic's real growth numbers are passed in
 prompt so "why now" can cite an actual measured growth rate instead of a single day's
 score.
 
-Start with **one** topic (`TREND_TRACK_TOPICS=crafts`) before tracking everything —
-each additional tracked topic is its own recurring Apify spend (see Deploying below).
+**Which topics get tracked** is decided fresh every crawl cycle, not fixed once: it's
+the union of any manual pins (`TREND_TRACK_TOPICS`, optional), today's top
+`TREND_AUTO_TRACK_COUNT` micro-trends pulled straight from the *same* daily crawl's
+rank_trends() output (no separate discovery crawl — this reuses the trend detection
+the app already does, so tracking "crafts" the whole category isn't the point; tracking
+the specific things rank_trends() surfaces, like "punch needle kit," is), and anything
+still within `TREND_TOPIC_RETENTION_DAYS` of its last crawl even if it dropped out of
+today's top picks — so a fading trend gets to show "Cooling" instead of just vanishing.
+The total tracked set is capped at `TREND_AUTO_TRACK_MAX` regardless, so cost stays
+bounded no matter how much the daily top-N churns.
 
 ## Endpoints
 
@@ -153,7 +166,10 @@ cached locally, and the calendar shows a "no history yet" message instead of err
 **Trend tracker cost:** at the defaults (50 results/platform/crawl, every 12h), one
 tracked topic costs roughly $0.20–0.25/crawl in worst-case Apify spend (TikTok $1.50/1k
 results, Instagram ~$2.30–2.60/1k) — about $12–14/month per topic at 2 crawls/day, plus
-a few cents of DataForSEO if configured. That's per topic — 10 tracked topics is
-roughly 10x. Pilot with one topic (`TREND_TRACK_TOPICS=crafts`) before widening
-`TREND_TRACK_TOPICS`, and lower `TREND_TIKTOK_MAX_RESULTS`/`TREND_INSTAGRAM_MAX_RESULTS`
-or raise `TREND_CRAWL_INTERVAL_HOURS` to trade coverage for cost.
+a few cents of DataForSEO if configured. The tracked set is capped at
+`TREND_AUTO_TRACK_MAX` (default `5`), so the realistic ceiling at defaults is **~$60–70/
+month total**, not unbounded — it won't creep up just because the daily top-N keeps
+changing. Lower `TREND_AUTO_TRACK_MAX`, `TREND_TIKTOK_MAX_RESULTS`/
+`TREND_INSTAGRAM_MAX_RESULTS`, or raise `TREND_CRAWL_INTERVAL_HOURS` to trade coverage
+for cost. Set `TREND_AUTO_TRACK_COUNT=0` (with one `TREND_TRACK_TOPICS` pin) to go back
+to tracking a single fixed topic for a cheaper pilot.
