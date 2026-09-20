@@ -11,11 +11,27 @@ platform failing doesn't block the other, and a topic is simply skipped
 (logged, not crashed) if DATABASE_URL isn't configured.
 """
 import logging
+import os
 
 import sources
 import trends
 
 _log = logging.getLogger(__name__)
+
+# If a topic's TikTok crawl has hit its result cap this many crawls in a row,
+# bump its cap to TIKTOK_CAP_BUMPED_MAX -- a topic that keeps maxing out is
+# probably being undercounted every time. Hard ceiling: never bumped past
+# TIKTOK_CAP_BUMPED_MAX automatically, whatever the streak.
+TIKTOK_CAP_BUMP_THRESHOLD = int(os.environ.get("TREND_TIKTOK_CAP_BUMP_THRESHOLD", "2"))
+TIKTOK_CAP_BUMPED_MAX     = int(os.environ.get("TREND_TIKTOK_CAP_BUMPED_MAX", "200"))
+
+
+def _tiktok_max_results(topic):
+    """None (use sources.py's own default) unless this topic has hit its cap
+    TIKTOK_CAP_BUMP_THRESHOLD crawls running -- then the bumped ceiling."""
+    if trends.recent_hit_cap_streak(topic) >= TIKTOK_CAP_BUMP_THRESHOLD:
+        return TIKTOK_CAP_BUMPED_MAX
+    return None
 
 
 def run(topic):
@@ -31,7 +47,11 @@ def run(topic):
                       "(sample data is never written into the trend ledger)", topic)
         return None
 
-    tiktok_posts, tiktok_capped = sources.crawl_tiktok_posts(topic)
+    tiktok_max = _tiktok_max_results(topic)
+    if tiktok_max:
+        _log.info("trend tracker: %r has hit its cap %d+ crawls running -- using bumped "
+                  "max_results=%d this run", topic, TIKTOK_CAP_BUMP_THRESHOLD, tiktok_max)
+    tiktok_posts, tiktok_capped = sources.crawl_tiktok_posts(topic, max_results=tiktok_max)
     ig_posts, ig_capped = sources.crawl_instagram_posts(topic.replace(" ", ""))
     all_posts = tiktok_posts + ig_posts
     hit_cap = tiktok_capped or ig_capped

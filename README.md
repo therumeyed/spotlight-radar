@@ -42,7 +42,9 @@ badge. Add the keys below and it goes **live**.
 | `TREND_AUTO_TRACK_MAX` | Hard cap on total concurrently-tracked topics (manual + auto + retained). | `5` |
 | `TREND_TOPIC_RETENTION_DAYS` | Days a topic keeps getting crawled after it drops out of today's top picks. | `5` |
 | `TREND_CRAWL_INTERVAL_HOURS` | How often the tracker re-crawls each tracked topic. | `12` |
-| `TREND_TIKTOK_MAX_RESULTS` / `TREND_INSTAGRAM_MAX_RESULTS` | Per-platform result cap per crawl, per topic. | `50` / `50` |
+| `TREND_TIKTOK_MAX_RESULTS` / `TREND_INSTAGRAM_MAX_RESULTS` | Per-platform result cap per crawl, per topic. Instagram stays low deliberately — supporting evidence only. | `100` / `50` |
+| `TREND_TIKTOK_CAP_BUMP_THRESHOLD` / `TREND_TIKTOK_CAP_BUMPED_MAX` | Consecutive capped crawls before a topic's TikTok cap auto-bumps, and the ceiling it bumps to (never exceeded automatically). | `2` / `200` |
+| `TREND_EXCLUDED_TOPICS` | Comma-separated topics that must never be auto-selected (discovered or retained) by exact name. | `craft online` |
 | `TREND_MIN_SNAPSHOTS` | Crawls needed before a topic can be classified (below this: "Collecting baseline"). | `2` |
 | `TREND_EMERGING_MIN_POSTS` / `TREND_EMERGING_MIN_CREATORS` / `TREND_EMERGING_MIN_GROWTH_PCT` | Thresholds for the "Emerging" classification — posts, DISTINCT creators (anti-gaming), growth %. | `5` / `3` / `50` |
 | `TREND_COOLING_MAX_GROWTH_PCT` | Growth % at or below which a topic is classified "Cooling". | `-20` |
@@ -139,6 +141,14 @@ that run's counts carry a `hit_result_cap` flag and the UI shows them as "N+" ("
 least N") rather than a precise total — a capped search may have missed genuinely new
 posts beyond what it fetched.
 
+**A topic that keeps hitting its cap gets more room, automatically, up to a hard
+ceiling.** If a topic's TikTok crawl hits its cap `TREND_TIKTOK_CAP_BUMP_THRESHOLD`
+crawls in a row, its cap bumps to `TREND_TIKTOK_CAP_BUMPED_MAX` for that (and every
+subsequent) crawl — a topic that keeps maxing out is being undercounted every time, so
+it gets more budget rather than silently staying wrong. This never escalates past the
+ceiling on its own; going further than that is a deliberate config change
+(`TREND_TIKTOK_CAP_BUMPED_MAX`), not something the code decides by itself.
+
 **TikTok is the primary velocity source; Instagram is supporting evidence only.**
 TikTok's search is sorted newest-first (`sort_by=date`) specifically so a capped crawl
 still sees the most recent posts rather than an arbitrary slice. Instagram's actor has
@@ -188,6 +198,25 @@ ever runs from the scheduler's own background loop, never from an incoming reque
 `/api/health`/`/api/trends` only ever read whatever was last discovered, so a slow live
 crawl can't make a health check look like the service is down.
 
+**Discovered candidates are screened before they can ever be tracked.** A candidate
+whose term matches reference-lookup/dictionary-site search intent — crossword, puzzle,
+dictionary, clue, definition, synonym, wordle (`sources.BLOCKED_SEARCH_INTENT`) — is
+rejected outright, whatever its score. The same filter is applied to Google Trends
+corroboration's rising-query results, so a legitimate topic's corroboration data can't
+get drowned in unrelated crossword-clue noise either. `TREND_EXCLUDED_TOPICS` is a
+by-name denylist for a specific candidate that turned out to be noise after the fact —
+"craft online" is excluded by default: it cleared the score threshold but its
+corroboration was dominated by irrelevant crossword-site results, so it's blocked from
+ever being re-selected. `POST /api/trends/{topic}/purge` removes a topic's existing
+history outright (ops-only, not reversible) rather than waiting for it to age out of
+the retention window.
+
+**Estimated Apify cost is visible in `/api/health`** (`estimated_daily_cost_usd`) and
+as a line on the Trend tracker section — derived from the currently-tracked topic
+count, their caps (including any bumped to 200), and cadence, using Apify's published
+per-1000-result pricing. This is a worst-case estimate (assumes every crawl hits its
+cap), not real billing data — there's no Apify billing API wired in here.
+
 ## Endpoints
 
 - `GET /api/radar` — today's radar (ideas + ranked trends + raw signals), cached to one build/day.
@@ -198,6 +227,7 @@ crawl can't make a health check look like the service is down.
 - `GET /api/trends` — every tracked topic with its latest snapshot.
 - `GET /api/trends/{topic}?days=30` — one topic's latest snapshot + snapshot history (for a trend line).
 - `POST /api/trends/{topic}/crawl` — ops-only: run one crawl+snapshot cycle right now, rather than waiting for the scheduler. Spends real Apify/DataForSEO budget if configured — not linked from the UI.
+- `POST /api/trends/{topic}/purge` — ops-only: permanently delete a topic's ledger + snapshot history (e.g. a discovered candidate that turned out to be noise). Not linked from the UI, not reversible.
 
 ## Deploying
 
@@ -210,16 +240,21 @@ Internal Database URL → this service's Environment → add `DATABASE_URL` → 
 a redeploy). With no `DATABASE_URL` set, the app still runs — no history, one day's build
 cached locally, and the calendar shows a "no history yet" message instead of erroring.
 
-**Trend tracker cost:** at the defaults (50 results/platform/crawl, every 12h), one
-tracked topic costs roughly $0.20–0.25/crawl in worst-case Apify spend (TikTok $1.50/1k
-results, Instagram ~$2.30–2.60/1k) — about $12–14/month per topic at 2 crawls/day, plus
-a few cents of DataForSEO if configured. The tracked set is capped at
-`TREND_AUTO_TRACK_MAX` (default `5`), so the realistic ceiling at defaults is **~$60–70/
-month total**, not unbounded — it won't creep up just because the daily top-N keeps
-changing. Lower `TREND_AUTO_TRACK_MAX`, `TREND_TIKTOK_MAX_RESULTS`/
-`TREND_INSTAGRAM_MAX_RESULTS`, or raise `TREND_CRAWL_INTERVAL_HOURS` to trade coverage
-for cost. Set `TREND_AUTO_TRACK_COUNT=0` (with one `TREND_TRACK_TOPICS` pin) to go back
-to tracking a single fixed topic for a cheaper pilot.
+**Trend tracker cost:** at the defaults (100 TikTok / 50 Instagram results per crawl,
+every 12h), one tracked topic costs roughly $0.27/crawl in worst-case Apify spend
+(TikTok $1.50/1k results, Instagram ~$2.45/1k) — about $16/month per topic at 2
+crawls/day, plus a few cents of DataForSEO if configured. The tracked set is capped at
+`TREND_AUTO_TRACK_MAX` (default `5`), so the realistic ceiling at defaults is
+**~$80/month total**. If every tracked topic ends up bumped to the 200-result TikTok
+ceiling (`TREND_TIKTOK_CAP_BUMPED_MAX`) — the worst worst case, all 5 topics
+consistently maxing out — that rises to **~$125/month**. Either way it's bounded, not
+unbounded: it won't creep up just because the daily top-N keeps changing. Lower
+`TREND_AUTO_TRACK_MAX`, `TREND_TIKTOK_MAX_RESULTS`/`TREND_INSTAGRAM_MAX_RESULTS`, or
+raise `TREND_CRAWL_INTERVAL_HOURS` to trade coverage for cost. Set
+`TREND_AUTO_TRACK_COUNT=0` (with one `TREND_TRACK_TOPICS` pin) to go back to tracking a
+single fixed topic for a cheaper pilot. The live estimate in `/api/health` reflects
+your actual current config, including any per-topic cap bumps — check that rather than
+recomputing this by hand.
 
 **Discovery adds effectively nothing on top of that at the default cadence.**
 `TREND_DISCOVERY_INTERVAL_HOURS=24` runs the same full aggregate crawl (~180 TikTok +

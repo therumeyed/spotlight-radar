@@ -322,3 +322,38 @@ def recently_tracked_topics(days):
         rows = conn.execute(
             "SELECT DISTINCT topic FROM trend_snapshots WHERE crawled_at >= %s", (since,)).fetchall()
     return [r[0] for r in rows]
+
+
+def recent_hit_cap_streak(topic):
+    """How many of the topic's most recent consecutive crawls hit their
+    result cap, counting back from the newest and stopping at the first one
+    that didn't. Used to auto-bump a topic's crawl size when it keeps maxing
+    out -- see tracker.py."""
+    if not enabled():
+        return 0
+    with store._connect() as conn:
+        _ensure_tables(conn)
+        rows = conn.execute(
+            "SELECT hit_result_cap FROM trend_snapshots WHERE topic=%s ORDER BY crawled_at DESC LIMIT 10",
+            (topic,)).fetchall()
+    streak = 0
+    for (hit,) in rows:
+        if hit:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def purge_topic(topic):
+    """Permanently delete all ledger + snapshot rows for a topic. Ops use
+    only -- e.g. removing a discovered candidate that turned out to be noise
+    (ambiguous phrase, irrelevant corroboration). Not reversible; the topic
+    can be re-discovered later unless also added to a scheduler exclusion list."""
+    if not enabled():
+        return {"posts": 0, "snapshots": 0}
+    with store._connect() as conn:
+        _ensure_tables(conn)
+        p = conn.execute("DELETE FROM trend_posts WHERE topic=%s", (topic,))
+        s = conn.execute("DELETE FROM trend_snapshots WHERE topic=%s", (topic,))
+        return {"posts": p.rowcount, "snapshots": s.rowcount}

@@ -44,6 +44,7 @@ import os
 import threading
 
 import engine
+import sources
 import tracker
 import trends
 
@@ -57,6 +58,16 @@ TOPIC_RETENTION_DAYS  = float(os.environ.get("TREND_TOPIC_RETENTION_DAYS", "5"))
 DISCOVERY_INTERVAL_HOURS = float(os.environ.get("TREND_DISCOVERY_INTERVAL_HOURS", "24"))
 DISCOVERY_MIN_SCORE      = float(os.environ.get("TREND_DISCOVERY_MIN_SCORE", "0.5"))
 ENABLED = os.environ.get("TREND_TRACKING_ENABLED", "").strip().lower() in ("1", "true", "yes")
+
+# Topics that must never be auto-selected (discovered OR retained), by exact
+# (case-insensitive) name -- for a candidate that turned out to be noise
+# after the fact. "craft online" surfaced ambiguous, off-topic corroboration
+# (crossword-clue pages) despite clearing the score threshold; excluded here
+# rather than relying on BLOCKED_SEARCH_INTENT, since the term itself
+# doesn't contain a blocked word -- only its related queries did. A manual
+# TREND_TRACK_TOPICS pin still overrides this (an explicit operator choice).
+EXCLUDED_TOPICS = {t.strip().lower() for t in
+                   os.environ.get("TREND_EXCLUDED_TOPICS", "craft online").split(",") if t.strip()}
 
 _stop = threading.Event()
 _discovery_cache = {"trends": [], "at": None}
@@ -94,17 +105,65 @@ def select_topics():
     """This cycle's tracked topics -- see module docstring. Purely reads the
     last discovery result (whatever's cached, possibly empty on first call
     before the loop has run) plus a cheap DB query -- never triggers a crawl
-    itself, so it's safe to call from any request handler, not just the loop."""
-    auto = [t["term"] for t in _discovery_cache["trends"]
-            if t.get("term") and t.get("score", 0) >= DISCOVERY_MIN_SCORE][:AUTO_TRACK_COUNT] \
-        if AUTO_TRACK_COUNT > 0 else []
-    retained = trends.recently_tracked_topics(TOPIC_RETENTION_DAYS)
+    itself, so it's safe to call from any request handler, not just the loop.
+
+    EXCLUDED_TOPICS and BLOCKED_SEARCH_INTENT are applied to auto-discovered
+    and retained candidates, never to MANUAL_TOPICS -- an explicit pin is an
+    operator's deliberate choice and overrides both."""
+    auto = []
+    if AUTO_TRACK_COUNT > 0:
+        qualified = [t["term"] for t in _discovery_cache["trends"] if t.get("term")
+                     and t.get("score", 0) >= DISCOVERY_MIN_SCORE
+                     and not sources.is_blocked_search_intent(t["term"])
+                     and t["term"].strip().lower() not in EXCLUDED_TOPICS]
+        auto = qualified[:AUTO_TRACK_COUNT]
+    retained = [t for t in trends.recently_tracked_topics(TOPIC_RETENTION_DAYS)
+                if t.strip().lower() not in EXCLUDED_TOPICS]
 
     ordered = []
     for t in MANUAL_TOPICS + auto + retained:
         if t not in ordered:
             ordered.append(t)
     return ordered[:AUTO_TRACK_MAX]
+
+
+# Apify per-1000-result pricing, from the actors' own published listings
+# (checked against apify.com directly -- sociavault/tiktok-keyword-search-
+# scraper and apify/instagram-hashtag-scraper). Instagram's is a range
+# ($2.30-2.60 depending on plan); using the midpoint for the estimate.
+_TIKTOK_PRICE_PER_1K = 1.50
+_INSTAGRAM_PRICE_PER_1K = 2.45
+# Discovery crawl size -- must match sources.py's tiktok()/instagram()
+# (KEYWORDS[:6] @ 30 results, KEYWORDS[:5] @ 60 results). Not read from
+# there directly to avoid coupling the estimate to internals; keep in sync
+# if those numbers change.
+_DISCOVERY_TIKTOK_RESULTS = 6 * 30
+_DISCOVERY_INSTAGRAM_RESULTS = 5 * 60
+
+
+def estimate_daily_cost_usd():
+    """Rough daily Apify cost from current config -- NOT real billing data
+    (no Apify billing API access here), just caps x cadence x published
+    pricing. Assumes every crawl hits its cap, so this is a conservative/
+    high estimate, consistent with how hit_result_cap is treated everywhere
+    else in this feature."""
+    topics = select_topics()
+    crawls_per_day = 24.0 / INTERVAL_HOURS if INTERVAL_HOURS > 0 else 0.0
+    per_crawl_cost = 0.0
+    for topic in topics:
+        tiktok_max = tracker.TIKTOK_CAP_BUMPED_MAX \
+            if trends.recent_hit_cap_streak(topic) >= tracker.TIKTOK_CAP_BUMP_THRESHOLD \
+            else sources.TREND_TIKTOK_MAX_RESULTS
+        per_crawl_cost += (tiktok_max / 1000.0) * _TIKTOK_PRICE_PER_1K
+        per_crawl_cost += (sources.TREND_INSTAGRAM_MAX_RESULTS / 1000.0) * _INSTAGRAM_PRICE_PER_1K
+    tracking_cost = per_crawl_cost * crawls_per_day
+
+    discovery_crawls_per_day = 24.0 / DISCOVERY_INTERVAL_HOURS if DISCOVERY_INTERVAL_HOURS > 0 else 0.0
+    discovery_cost_per_crawl = ((_DISCOVERY_TIKTOK_RESULTS / 1000.0) * _TIKTOK_PRICE_PER_1K
+                                + (_DISCOVERY_INSTAGRAM_RESULTS / 1000.0) * _INSTAGRAM_PRICE_PER_1K)
+    discovery_cost = discovery_cost_per_crawl * discovery_crawls_per_day
+
+    return round(tracking_cost + discovery_cost, 2)
 
 
 def _seconds_until_next_run(topics):

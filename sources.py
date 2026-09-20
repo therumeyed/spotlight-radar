@@ -458,8 +458,11 @@ def _sample(source):
 # as "new" -- tiktok()/instagram() never captured one because they didn't need
 # to. These do, and return [] (not sample data) when not live, since a velocity
 # series salted with fabricated posts would be worse than a gap in the record.
-TREND_TIKTOK_MAX_RESULTS    = int(os.environ.get("TREND_TIKTOK_MAX_RESULTS", "50"))
+TREND_TIKTOK_MAX_RESULTS    = int(os.environ.get("TREND_TIKTOK_MAX_RESULTS", "100"))
 TREND_INSTAGRAM_MAX_RESULTS = int(os.environ.get("TREND_INSTAGRAM_MAX_RESULTS", "50"))
+# Instagram stays at 50 deliberately -- it's supporting evidence only (no
+# recency sort on this actor), so there's no case for spending more on it
+# than the primary TikTok source.
 
 
 def crawl_tiktok_posts(keyword, max_results=None):
@@ -530,15 +533,33 @@ def crawl_instagram_posts(hashtag, max_results=None):
     return posts, len(items) >= cap
 
 
+# Reference-lookup/dictionary-site search intent -- a term whose Google
+# results are dominated by this isn't telling us anything about a craft
+# trend, it's telling us the phrase is ambiguous with an unrelated genre of
+# content (crossword-clue sites, dictionary definition pages, etc). Used to
+# both filter corroboration noise and screen discovery candidates.
+BLOCKED_SEARCH_INTENT = ("crossword", "puzzle", "dictionary", "clue", "definition",
+                         "synonym", "wordle")
+
+
+def is_blocked_search_intent(text):
+    t = (text or "").lower()
+    return any(w in t for w in BLOCKED_SEARCH_INTENT)
+
+
 def trend_corroboration(topic):
     """DataForSEO (or the free fallback) rising-query check for `topic` --
     validation only, per the brief: this never supplies a post/view count,
     it only says whether Google search interest agrees with what the social
-    crawl found. None on total failure (never fabricated)."""
+    crawl found. None on total failure (never fabricated). Rising queries
+    matching BLOCKED_SEARCH_INTENT are dropped before corroboration is
+    computed -- a topic whose "agreement" is a pile of crossword-clue pages
+    isn't actually corroborated by anything."""
     rising = _dataforseo_rising(topic) or _trends_rising(topic)
     if rising is None:
         return None
     terms = [(rq.get("query") or "").lower() for rq in rising if rq.get("query")]
+    terms = [t for t in terms if not is_blocked_search_intent(t)]
     canon_topic = re.sub(r"[^a-z]", "", topic.lower())
     corroborated = any(canon_topic and canon_topic in re.sub(r"[^a-z]", "", t) for t in terms)
     return {"corroborated": corroborated, "rising_terms": terms[:10]}

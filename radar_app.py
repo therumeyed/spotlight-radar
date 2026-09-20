@@ -53,7 +53,11 @@ def health():
                                 "auto_track_max": scheduler.AUTO_TRACK_MAX,
                                 "discovery_interval_hours": scheduler.DISCOVERY_INTERVAL_HOURS,
                                 "discovery_last_run": (scheduler._discovery_cache["at"].isoformat()
-                                                        if scheduler._discovery_cache["at"] else None)}}
+                                                        if scheduler._discovery_cache["at"] else None),
+                                "estimated_daily_cost_usd": (scheduler.estimate_daily_cost_usd()
+                                                              if scheduler.ENABLED else 0.0),
+                                "estimated_cost_note": ("Apify only, worst-case (assumes every crawl "
+                                                         "hits its cap) — not real billing data")}}
 
 
 @app.get("/api/trends")
@@ -88,6 +92,19 @@ def trend_crawl_now(topic: str):
         raise HTTPException(status_code=503,
                              detail="trend tracking unavailable: DATABASE_URL or APIFY_API_KEY not configured")
     return snap
+
+
+@app.post("/api/trends/{topic}/purge")
+def trend_purge(topic: str):
+    """Ops-only: permanently delete a topic's ledger + snapshot history --
+    for a discovered candidate that turned out to be noise (e.g. an
+    ambiguous phrase whose corroboration was irrelevant). Not linked from
+    the UI, not reversible. Add the topic to TREND_EXCLUDED_TOPICS too, or
+    it can simply be re-discovered on a later crawl."""
+    if not trends.enabled():
+        raise HTTPException(status_code=503, detail="trend tracking unavailable: DATABASE_URL not configured")
+    deleted = trends.purge_topic(topic)
+    return {"topic": topic, "deleted": deleted}
 
 
 @app.get("/api/radar")
