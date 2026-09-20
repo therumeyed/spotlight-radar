@@ -36,6 +36,13 @@ badge. Add the keys below and it goes **live**.
 | `RADAR_KEYWORDS` | Seed hashtags/keywords to scan socially. | `crafts,craftok,diy crafts,craft ideas,handmade,craft tutorial,craft hack,easy crafts,craft diy,crafting` |
 | `APIFY_TIKTOK_ACTOR` | Apify actor id for TikTok. | `sociavault~tiktok-keyword-search-scraper` |
 | `APIFY_INSTAGRAM_ACTOR` | Apify actor id for Instagram. | `apify~instagram-hashtag-scraper` |
+| `TREND_TRACKING_ENABLED` | Turns on the longitudinal trend tracker (see below). | — (off) |
+| `TREND_TRACK_TOPICS` | Comma-separated topics/hashtags to track over time. Start with **one** for a pilot. | — (none) |
+| `TREND_CRAWL_INTERVAL_HOURS` | How often the tracker re-crawls each tracked topic. | `12` |
+| `TREND_TIKTOK_MAX_RESULTS` / `TREND_INSTAGRAM_MAX_RESULTS` | Per-platform result cap per crawl, per topic. | `50` / `50` |
+| `TREND_MIN_SNAPSHOTS` | Crawls needed before a topic can be classified (below this: "Collecting baseline"). | `2` |
+| `TREND_EMERGING_MIN_POSTS` / `TREND_EMERGING_MIN_CREATORS` / `TREND_EMERGING_MIN_GROWTH_PCT` | Thresholds for the "Emerging" classification. | `5` / `3` / `50` |
+| `TREND_COOLING_MAX_GROWTH_PCT` | Growth % at or below which a topic is classified "Cooling". | `-20` |
 
 > **Note on the Apify actors:** actor input/output shapes vary between actors, so the
 > parsers in `sources.py` are deliberately defensive — when you plug in your real key,
@@ -64,6 +71,18 @@ engine.py    → collect → rank_trends (define "trending") → make_ideas (Cla
                 suppresses any live idea with no real example behind it → persists daily
 store.py     → optional Postgres history archive (no-op without DATABASE_URL) — the
                 durable copy; survives restarts/redeploys
+trends.py    → longitudinal trend tracking: a durable post-level ledger (dedup by
+                platform+post ID) + an append-only history of computed growth
+                snapshots per topic — 24h/3d/7d windows, velocity, acceleration,
+                lifecycle classification. Off without DATABASE_URL (no non-durable
+                fallback here — a velocity claim that doesn't survive a restart is
+                worse than no claim)
+tracker.py   → one crawl-and-snapshot cycle for one topic: pulls fresh posts,
+                merges into the ledger, records a snapshot. Never called from a
+                page request — only the scheduler or the manual ops trigger
+scheduler.py → in-process background loop that runs tracker.py on a fixed cadence
+                (default 12h). Off by default; needs TREND_TRACKING_ENABLED,
+                TREND_TRACK_TOPICS, and DATABASE_URL all set
 radar_app.py → FastAPI: today's radar, history, a specific past day, health, dashboard
 web/         → the dashboard (index.html, app.js, styles.css) — History as an overlay
                 calendar, not a page section; no user-facing refresh/regenerate control
@@ -83,13 +102,42 @@ In live mode, an idea with no real post behind it is suppressed rather than show
 ready-to-pitch. In sample mode (no Apify key), no example is fabricated either — the UI
 says so explicitly instead of showing a fake post.
 
+**Trend velocity tracker (optional, off by default):** the single-crawl signals above
+answer "what does today's crawl show"; the tracker answers "is this actually growing."
+For each tracked topic it keeps a durable, deduplicated ledger of every post ever seen
+(by platform + post ID), then on every scheduled crawl computes real growth — new posts
+in the last 24h vs the previous 24h (also 3d/7d), unique creators, engagement — and
+classifies the topic's lifecycle stage:
+
+- **Collecting baseline** — not enough crawl history yet to claim anything (the first
+  crawl for a topic is *always* this; it takes `TREND_MIN_SNAPSHOTS` crawls before any
+  other label is possible).
+- **New** — posts just started appearing where there were none before.
+- **Emerging** / **Accelerating** — real growth clearing the configured thresholds
+  (`TREND_EMERGING_MIN_POSTS`/`_CREATORS`/`_GROWTH_PCT`); "Accelerating" additionally
+  means growth is speeding up crawl-over-crawl, not just continuing.
+- **Sustained** — active, but growth has levelled off.
+- **Cooling** — activity is declining (`TREND_COOLING_MAX_GROWTH_PCT`).
+
+Google Trends (DataForSEO or the free fallback) is used here only to *corroborate* — a
+"does search interest agree" check — never to supply post/view counts itself. When
+Claude writes the 5 ideas, any tracked topic's real growth numbers are passed into the
+prompt so "why now" can cite an actual measured growth rate instead of a single day's
+score.
+
+Start with **one** topic (`TREND_TRACK_TOPICS=crafts`) before tracking everything —
+each additional tracked topic is its own recurring Apify spend (see Deploying below).
+
 ## Endpoints
 
 - `GET /api/radar` — today's radar (ideas + ranked trends + raw signals), cached to one build/day.
 - `GET /api/radar/history?year=&month=` — which dates in that month have a saved report (for the History calendar).
 - `GET /api/radar/{date}` — a specific past day's report exactly as originally generated. Read-only, never regenerates.
 - `POST /api/refresh` — force a fresh build for today. Deliberately not linked from the UI — report generation is schedule-only so end users can't trigger a paid crawl/LLM run on demand. Ops-only lever for a failed scheduled build.
-- `GET /api/health` — liveness + whether Apify/AI are configured.
+- `GET /api/health` — liveness + whether Apify/AI/history/trend-tracking are configured.
+- `GET /api/trends` — every tracked topic with its latest snapshot.
+- `GET /api/trends/{topic}?days=30` — one topic's latest snapshot + snapshot history (for a trend line).
+- `POST /api/trends/{topic}/crawl` — ops-only: run one crawl+snapshot cycle right now, rather than waiting for the scheduler. Spends real Apify/DataForSEO budget if configured — not linked from the UI.
 
 ## Deploying
 
@@ -101,3 +149,11 @@ instance. Render dashboard → New + → PostgreSQL → create a small database 
 Internal Database URL → this service's Environment → add `DATABASE_URL` → save (triggers
 a redeploy). With no `DATABASE_URL` set, the app still runs — no history, one day's build
 cached locally, and the calendar shows a "no history yet" message instead of erroring.
+
+**Trend tracker cost:** at the defaults (50 results/platform/crawl, every 12h), one
+tracked topic costs roughly $0.20–0.25/crawl in worst-case Apify spend (TikTok $1.50/1k
+results, Instagram ~$2.30–2.60/1k) — about $12–14/month per topic at 2 crawls/day, plus
+a few cents of DataForSEO if configured. That's per topic — 10 tracked topics is
+roughly 10x. Pilot with one topic (`TREND_TRACK_TOPICS=crafts`) before widening
+`TREND_TRACK_TOPICS`, and lower `TREND_TIKTOK_MAX_RESULTS`/`TREND_INSTAGRAM_MAX_RESULTS`
+or raise `TREND_CRAWL_INTERVAL_HOURS` to trade coverage for cost.

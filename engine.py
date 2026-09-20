@@ -21,6 +21,8 @@ import urllib.request
 
 import sources
 import store
+import trends as trend_tracker   # aliased: every function below already uses `trends` as a local
+                                  # parameter name for the ranked-trend-cluster list (unrelated concept)
 
 MODEL = os.environ.get("RADAR_MODEL", os.environ.get("ASSISTANT_MODEL", "claude-haiku-4-5-20251001"))
 _DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -127,13 +129,36 @@ def _srcs(sources):
     return ", ".join(_SRC_NAME.get(s, s) for s in sources)
 
 
+def _velocity_note(term):
+    """A short, real clause of longitudinal growth for `term`, from the
+    trend-velocity tracker (trends.py) -- if that topic is being tracked and
+    has cleared the baseline-collection period. "" (never fabricated) when
+    tracking isn't configured, the term isn't tracked, or it's still
+    establishing a baseline -- a single-crawl idea must never claim a growth
+    rate it doesn't actually have on record."""
+    if not trend_tracker.enabled():
+        return ""
+    try:
+        snap = trend_tracker.latest(term)
+    except Exception:
+        return ""
+    if not snap or snap["classification"] == "collecting_baseline":
+        return ""
+    growth = snap.get("growth_pct_24h")
+    growth_txt = ("%+.0f%% vs the previous 24h" % growth) if growth is not None else "new activity"
+    return (" Longitudinal tracking: %s (%s, %d new posts/%d creators in the last 24h)."
+            % (snap["classification"].replace("_", " "), growth_txt,
+               snap["new_posts_24h"], snap["unique_creators_24h"]))
+
+
 def _llm_ideas(topic, trends):
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         return None
     facts = "\n".join(
-        "- %s (score %.2f, %s, on %s) — %s" % (
-            t["term"], t["score"], t["speed"], _srcs(t["sources"]), t["metrics"][0])
+        "- %s (score %.2f, %s, on %s) — %s%s" % (
+            t["term"], t["score"], t["speed"], _srcs(t["sources"]), t["metrics"][0],
+            _velocity_note(t["term"]))
         for t in trends)
     system = (
         "You are the content strategist behind 'The Radar' at a social media agency, briefing a "
@@ -148,6 +173,9 @@ def _llm_ideas(topic, trends):
         "3. Name the platform + format in the title (e.g. '15-sec TikTok Reel', 'Instagram carousel', "
         "'duet/stitch').\n"
         "4. 'why_now' must end with the literal opening hook or caption line to use, in quotes.\n"
+        "5. When a trend's line below includes 'Longitudinal tracking' data (real measured growth "
+        "over time, not just today's snapshot), cite the actual number — the growth percentage or "
+        "new-post count — in why_now instead of a vague 'trending' claim.\n"
         "Ground everything in the trends provided — never invent a trend, never generalize a "
         "micro-trend back up to the parent topic. Return ONLY a JSON array of 5 objects with keys: "
         "\"title\" (max 12 words; names the platform/format AND the exact micro-trend term), "
@@ -198,6 +226,7 @@ def _rule_ideas(trends):
                ("breakout" if t["base"] >= 0.9 else "rising", _srcs(t["sources"]), t["window"], hook)) if fast else \
               ("Building trend on %s — get ahead before it's common knowledge. Window: %s. Hook: %s" %
                (_srcs(t["sources"]), t["window"], hook))
+        why += _velocity_note(t["term"])
         ideas.append({"title": title, "signal": t["metrics"][0], "why_now": why, "play": play})
     return ideas
 
