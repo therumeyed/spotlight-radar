@@ -72,19 +72,24 @@ def select_topics():
 
 
 def _seconds_until_next_run(topics):
-    """Seconds to wait before the next crawl, based on the most recent
-    snapshot actually on record across the given topics -- not process
-    uptime, so a redeploy doesn't restart the clock or force an immediate run."""
-    last = None
+    """Seconds to wait before the next crawl of this whole topic batch --
+    not process uptime, so a redeploy doesn't restart the clock or force an
+    immediate run. Governed by the OLDEST last-crawl among the given topics,
+    since the batch runs together: if even one topic has never been crawled
+    (brand new, just auto-selected), that alone means the batch is due now --
+    a topic newly added to the tracked set must not sit unwatched just
+    because some OTHER topic in the same batch happens to be fresh."""
+    oldest = None
     for topic in topics:
         snap = trends.latest(topic)
-        if snap:
-            t = _dt.datetime.fromisoformat(snap["crawled_at"])
-            if last is None or t > last:
-                last = t
-    if last is None:
-        return 0.0   # nothing crawled yet for any of these topics -- run now
-    due = last + _dt.timedelta(hours=INTERVAL_HOURS)
+        if not snap:
+            return 0.0   # this topic has never been crawled -- the batch is due now
+        t = _dt.datetime.fromisoformat(snap["crawled_at"])
+        if oldest is None or t < oldest:
+            oldest = t
+    if oldest is None:
+        return 0.0   # empty topic list -- nothing to wait on, re-check soon
+    due = oldest + _dt.timedelta(hours=INTERVAL_HOURS)
     now = _dt.datetime.now(due.tzinfo)
     return max(0.0, (due - now).total_seconds())
 
