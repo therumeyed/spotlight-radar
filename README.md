@@ -243,6 +243,20 @@ production incident's exact offenders) — belt-and-braces on top of belt-and-br
 not reversible) rather than waiting for it to age out of the retention window — used to
 clear those three topics' history once the bug was found.
 
+Third — a candidate can be genuinely about crafts and still be useless to a social team,
+because it's just the category itself: "craft", "crafts", "diy" all pass
+`is_craft_relevant()` trivially (they're literally in `CRAFT_VOCABULARY`), but nobody
+runs a trend tracker to be told "crafts" is a topic. This mostly came from the
+social-hashtag discovery channel — `tiktok()`/`instagram()` cluster posts by hashtag, and
+`#crafts`/`#diy` are the near-universal tags on anything in this niche (a post with no
+hashtags at all even falls back to the literal seed keyword as its tag), so the bare
+category was showing up as a top-scoring "discovered trend" on effectively every run.
+`sources.is_too_generic()` rejects a candidate whose words are ALL drawn from a small
+bare-category set (craft, crafts, diy, hobby, tutorial, idea, hack, online, easy, project,
+etc.) after dropping stopwords — narrow enough that a genuine multi-word discovery like
+"crafts to do when bored" or "5 minute crafts with paper easy" still gets through, since
+those say something specific rather than just naming the category.
+
 **Estimated Apify cost is visible in `/api/health`** (`estimated_daily_cost_usd`) —
 ops-only, not surfaced on the dashboard — derived from the currently-tracked topic
 count, their caps (including any bumped to 200), and cadence, using Apify's published

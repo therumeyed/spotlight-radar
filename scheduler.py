@@ -132,9 +132,10 @@ def select_topics():
     before the loop has run) plus a cheap DB query -- never triggers a crawl
     itself, so it's safe to call from any request handler, not just the loop.
 
-    EXCLUDED_TOPICS and BLOCKED_SEARCH_INTENT are applied to auto-discovered
-    and retained candidates, never to MANUAL_TOPICS -- an explicit pin is an
-    operator's deliberate choice and overrides both. The rising-query channel
+    EXCLUDED_TOPICS, BLOCKED_SEARCH_INTENT, is_craft_relevant() and
+    is_too_generic() are all applied to auto-discovered and retained
+    candidates, never to MANUAL_TOPICS -- an explicit pin is an operator's
+    deliberate choice and overrides all four. The rising-query channel
     (Layer 1, primary) fills slots first; engine.discover_trends() (Layer 1b)
     fills whatever's left -- see module docstring for why both exist."""
     auto = []
@@ -142,11 +143,13 @@ def select_topics():
         rising_qualified = [c["term"] for c in _discovery_cache["rising"]
                             if c["term"] not in EXCLUDED_TOPICS
                             and sources.is_craft_relevant(c["term"])
+                            and not sources.is_too_generic(c["term"])
                             and (c["breakout"] or (c["growth_pct"] or 0) >= RISING_QUERY_MIN_GROWTH_PCT)]
         social_qualified = [t["term"] for t in _discovery_cache["trends"] if t.get("term")
                             and t.get("score", 0) >= DISCOVERY_MIN_SCORE
                             and not sources.is_blocked_search_intent(t["term"])
                             and sources.is_craft_relevant(t["term"])
+                            and not sources.is_too_generic(t["term"])
                             and t["term"].strip().lower() not in EXCLUDED_TOPICS]
         merged = []
         for t in rising_qualified + social_qualified:
@@ -154,7 +157,8 @@ def select_topics():
                 merged.append(t)
         auto = merged[:AUTO_TRACK_COUNT]
     retained = [t for t in trends.recently_tracked_topics(TOPIC_RETENTION_DAYS)
-                if t.strip().lower() not in EXCLUDED_TOPICS and sources.is_craft_relevant(t)]
+                if t.strip().lower() not in EXCLUDED_TOPICS and sources.is_craft_relevant(t)
+                and not sources.is_too_generic(t)]
 
     ordered = []
     for t in MANUAL_TOPICS + auto + retained:

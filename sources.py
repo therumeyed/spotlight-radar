@@ -583,6 +583,34 @@ def is_craft_relevant(text):
     return bool(words & CRAFT_VOCABULARY)
 
 
+# Being ABOUT crafts isn't enough on its own -- "craft", "crafts", "diy" pass
+# is_craft_relevant() trivially since they're literally in CRAFT_VOCABULARY,
+# but a social team already knows those are topics; tracking the category
+# itself as if it were a discovered trend is noise, not a signal. This mostly
+# comes from the social-hashtag discovery channel (engine.discover_trends()):
+# tiktok()/instagram() cluster posts by hashtag, and #crafts/#diy are the
+# near-universal tags on anything in this niche (plus a post with no hashtags
+# at all falls back to the literal seed keyword as its tag) -- so the seed
+# category is almost guaranteed to be among the highest-scoring "clusters"
+# every single run. GENERIC_TERMS blocks a candidate whose words are ALL
+# drawn from this bare-category set (after dropping stopwords) -- deliberately
+# narrow so a genuine multi-word discovery like "crafts to do when bored" or
+# "5 minute crafts with paper easy" -- which says something specific, not
+# just the category name -- still gets through.
+GENERIC_TERMS = {
+    "craft", "crafts", "crafting", "diy", "handmade", "homemade", "handicraft",
+    "hobby", "hobbies", "hobbyist", "tutorial", "tutorials", "idea", "ideas",
+    "hack", "hacks", "online", "easy", "project", "projects",
+}
+_GENERIC_STOPWORDS = {"a", "an", "the", "and", "or", "to", "do", "for", "of",
+                       "in", "on", "with", "near", "me", "at", "is", "are"}
+
+
+def is_too_generic(text):
+    words = set(re.findall(r"[a-z]+", (text or "").lower())) - _GENERIC_STOPWORDS
+    return bool(words) and words <= GENERIC_TERMS
+
+
 def trend_corroboration(topic):
     """DataForSEO (or the free fallback) rising-query check for `topic` --
     validation only, per the brief: this never supplies a post/view count,
