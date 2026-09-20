@@ -448,3 +448,99 @@ def _sample(source):
     for s in _SAMPLE[source]:
         out.append(dict(s, source=source, sample=True, url=_TAG_URL[source](s["term"])))
     return out
+
+
+# ============================================================ TREND TRACKING ==
+# Post-level crawls for the longitudinal tracker (tracker.py/trends.py) --
+# distinct from tiktok()/instagram() above, which only ever aggregate signals
+# for a single build and never persist individual posts. Velocity/growth needs
+# a STABLE ID per post so the same post seen on day 2 doesn't get double-counted
+# as "new" -- tiktok()/instagram() never captured one because they didn't need
+# to. These do, and return [] (not sample data) when not live, since a velocity
+# series salted with fabricated posts would be worse than a gap in the record.
+TREND_TIKTOK_MAX_RESULTS    = int(os.environ.get("TREND_TIKTOK_MAX_RESULTS", "50"))
+TREND_INSTAGRAM_MAX_RESULTS = int(os.environ.get("TREND_INSTAGRAM_MAX_RESULTS", "50"))
+
+
+def crawl_tiktok_posts(keyword, max_results=None):
+    """Structured TikTok posts for one keyword, for the longitudinal tracker.
+    Returns (posts, hit_cap) -- hit_cap is True when the actor returned >= the
+    requested cap, i.e. there were likely more matching posts than we asked
+    for (worth knowing, since it silently truncates what "new posts" can see).
+
+    Field mapping note (same caveat the README already gives for the aggregate
+    path): this actor's docs don't pin down exact field names for the video ID
+    or engagement stats, only that they exist ("Video ID... statistics...
+    Complete metadata from TikTok API"). The names below match TikTok's own
+    native aweme-object shape, which this actor is understood to pass through
+    -- sanity-check against one real live run before trusting this at volume."""
+    cap = max_results or TREND_TIKTOK_MAX_RESULTS
+    if not live():
+        return [], False
+    items = _run(TIKTOK_ACTOR, {"query": keyword, "region": GEO, "max_results": cap,
+                                "sort_by": "relevance"})
+    posts = []
+    for it in items:
+        info = it.get("aweme_info") or it
+        stats = info.get("statistics") or info.get("stats") or {}
+        post_id = str(info.get("aweme_id") or info.get("id") or it.get("id") or "").strip()
+        if not post_id:
+            continue    # can't dedupe/track without a stable id -- skip rather than guess one
+        author = ((info.get("author") or {}).get("unique_id")
+                  or (info.get("author") or {}).get("nickname")
+                  or (it.get("authorMeta") or {}).get("name") or "")
+        url = info.get("share_url") or it.get("webVideoUrl") or it.get("shareUrl") or ""
+        posts.append({
+            "platform": "tiktok", "post_id": post_id, "url": url, "creator": author,
+            "published_at": _iso_from_ts(info.get("create_time") or info.get("createTime")),
+            "views": int(_num(stats.get("play_count") or stats.get("playCount") or 0)),
+            "likes": int(_num(stats.get("digg_count") or stats.get("diggCount")
+                               or stats.get("like_count") or 0)),
+            "comments": int(_num(stats.get("comment_count") or stats.get("commentCount") or 0)),
+            "shares": int(_num(stats.get("share_count") or stats.get("shareCount") or 0)),
+        })
+    return posts, len(items) >= cap
+
+
+def crawl_instagram_posts(hashtag, max_results=None):
+    """Structured Instagram posts for one hashtag, for the longitudinal tracker.
+    Returns (posts, hit_cap). Field names per the official actor's documented
+    output schema (id/shortCode, ownerUsername, timestamp, likesCount, etc)."""
+    cap = max_results or TREND_INSTAGRAM_MAX_RESULTS
+    if not live():
+        return [], False
+    items = _run(INSTAGRAM_ACTOR, {"hashtags": [hashtag], "resultsLimit": cap})
+    posts = []
+    for it in items:
+        post_id = str(it.get("id") or it.get("shortCode") or "").strip()
+        if not post_id:
+            continue
+        url = it.get("url") or it.get("postUrl") or it.get("permalink") or ""
+        author = it.get("ownerUsername") or it.get("username") or ""
+        likes = _num(it.get("likesCount") or it.get("likes") or 0)
+        views = _num(it.get("videoPlayCount") or it.get("igPlayCount")
+                      or it.get("videoViewCount") or 0)
+        posts.append({
+            "platform": "instagram", "post_id": post_id, "url": url, "creator": author,
+            "published_at": _iso_from_ts(it.get("timestamp") or it.get("takenAt")
+                                          or it.get("takenAtTimestamp")),
+            "views": int(views),
+            "likes": int(likes) if likes >= 0 else 0,   # -1 means "hidden", never fabricate a count
+            "comments": int(_num(it.get("commentsCount") or it.get("comments") or 0)),
+            "shares": int(_num(it.get("reshareCount") or 0)),
+        })
+    return posts, len(items) >= cap
+
+
+def trend_corroboration(topic):
+    """DataForSEO (or the free fallback) rising-query check for `topic` --
+    validation only, per the brief: this never supplies a post/view count,
+    it only says whether Google search interest agrees with what the social
+    crawl found. None on total failure (never fabricated)."""
+    rising = _dataforseo_rising(topic) or _trends_rising(topic)
+    if rising is None:
+        return None
+    terms = [(rq.get("query") or "").lower() for rq in rising if rq.get("query")]
+    canon_topic = re.sub(r"[^a-z]", "", topic.lower())
+    corroborated = any(canon_topic and canon_topic in re.sub(r"[^a-z]", "", t) for t in terms)
+    return {"corroborated": corroborated, "rising_terms": terms[:10]}

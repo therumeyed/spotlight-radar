@@ -6,25 +6,38 @@ Run locally (from the radar/ folder):
 Then open http://localhost:8000
 
 Endpoints:
-    GET  /api/radar     today's radar (5 ideas + ranked trends + raw signals), cached daily
-    POST /api/refresh   force a fresh build for today
-    GET  /api/health    liveness + whether Apify/history storage are configured (live vs sample)
+    GET  /api/radar             today's radar (5 ideas + ranked trends + raw signals), cached daily
+    POST /api/refresh           force a fresh build for today
+    GET  /api/health            liveness + whether Apify/history/trend-tracking are configured
+    GET  /api/trends            every longitudinally-tracked topic + its latest snapshot
+    GET  /api/trends/{topic}    one topic's latest snapshot + history (for a trend line)
+    POST /api/trends/{topic}/crawl   ops-only: run one crawl+snapshot cycle now
 
-Self-contained — imports only `engine`/`sources`/`store` in this folder, so
-the whole directory ports cleanly into another dashboard.
+Self-contained — imports only `engine`/`sources`/`store`/`trends`/`tracker`/
+`scheduler` in this folder, so the whole directory ports cleanly elsewhere.
 """
 import datetime as _dt
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 import engine
+import scheduler
 import sources
 import store
+import tracker
+import trends
 
-app = FastAPI(title="The Radar — daily social trend discovery")
+
+@asynccontextmanager
+async def _lifespan(app):
+    scheduler.start()   # no-op unless TREND_TRACKING_ENABLED + TREND_TRACK_TOPICS + DATABASE_URL are all set
+    yield
+
+app = FastAPI(title="The Radar — daily social trend discovery", lifespan=_lifespan)
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 
 
@@ -32,7 +45,40 @@ WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 def health():
     return {"status": "ok", "apify": sources.live(),
             "ai": bool(os.environ.get("ANTHROPIC_API_KEY")), "topic": sources.TOPIC,
-            "history_persistent": store.enabled()}
+            "history_persistent": store.enabled(),
+            "trend_tracking": {"enabled": scheduler.ENABLED, "topics": scheduler.TRACKED_TOPICS,
+                                "interval_hours": scheduler.INTERVAL_HOURS}}
+
+
+@app.get("/api/trends")
+def trends_list():
+    """Every topic with at least one recorded snapshot, with its latest numbers."""
+    topics = trends.tracked_topics()
+    return {"tracking_enabled": scheduler.ENABLED, "topics": [trends.latest(t) for t in topics]}
+
+
+@app.get("/api/trends/{topic}")
+def trend_detail(topic: str, days: int = Query(30, ge=1, le=90)):
+    """One topic's latest snapshot plus its snapshot history, for a trend line.
+    `days` selects the window shown (1 for a 24h view, 7, 30, ...)."""
+    snap = trends.latest(topic)
+    if snap is None:
+        raise HTTPException(status_code=404, detail="no snapshots recorded for that topic yet")
+    return {"latest": snap, "history": trends.history(topic, days=days)}
+
+
+@app.post("/api/trends/{topic}/crawl")
+def trend_crawl_now(topic: str):
+    """Ops-only: run one crawl+snapshot cycle for a topic right now, rather than
+    waiting for the scheduler. Not linked from the UI, same reasoning as
+    /api/refresh. This spends real Apify (and DataForSEO) budget if
+    APIFY_API_KEY is configured — use it for the one-topic pilot test, not
+    casually. 503 if trend tracking isn't configured (DATABASE_URL/APIFY_API_KEY)."""
+    snap = tracker.run(topic)
+    if snap is None:
+        raise HTTPException(status_code=503,
+                             detail="trend tracking unavailable: DATABASE_URL or APIFY_API_KEY not configured")
+    return snap
 
 
 @app.get("/api/radar")

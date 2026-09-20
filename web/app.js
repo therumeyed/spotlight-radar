@@ -148,6 +148,62 @@
     $("signalPreview").innerHTML = top3.map(signalRow).join("");
   }
 
+  // --------------------------------------------------------- trend tracker --
+  const TREND_LABEL = { collecting_baseline: "Collecting baseline", new: "New", emerging: "Emerging",
+    accelerating: "Accelerating", sustained: "Sustained", cooling: "Cooling" };
+
+  function sparkline(history) {
+    const w = 160, h = 32;
+    if (!history || history.length < 2) {
+      return `<p class="muted" style="font-size:12px;margin:6px 0">Not enough history yet for a trend line.</p>`;
+    }
+    const vals = history.map((p) => p.new_posts_24h || 0);
+    const max = Math.max(...vals, 1);
+    const step = w / (vals.length - 1);
+    const pts = vals.map((v, i) => `${(i * step).toFixed(1)},${(h - (v / max) * h).toFixed(1)}`).join(" ");
+    return `<svg class="sparkline" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" role="img" aria-label="New posts per crawl, over time">
+      <polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>`;
+  }
+
+  function trendCard(topic, snap, history) {
+    const cls = snap.classification;
+    const growth = snap.growth_pct_24h;
+    const growthText = growth == null ? "—" : `${growth > 0 ? "+" : ""}${growth}%`;
+    const gt = snap.google_trends;
+    const gtText = cls === "collecting_baseline" ? "" :
+      gt ? (gt.corroborated ? "Google Trends agrees" : "Google Trends: no corroboration yet") : "";
+    const links = (snap.sample_posts || []).slice(0, 3).map((p) =>
+      `<a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">${esc(p.platform)}${p.creator ? " · @" + esc(p.creator) : ""}</a>`
+    ).join(" · ");
+    return `<article class="trend-card">
+      <div class="trend-card-head"><strong>${esc(topic)}</strong>
+        <span class="trend-badge trend-badge--${esc(cls)}">${esc(TREND_LABEL[cls] || cls)}</span></div>
+      <div class="trend-stats">
+        <div><strong>${snap.new_posts_24h}</strong><span>new posts, 24h</span></div>
+        <div><strong>${snap.prev_posts_24h}</strong><span>previous 24h</span></div>
+        <div><strong>${growthText}</strong><span>growth</span></div>
+        <div><strong>${snap.unique_creators_24h}</strong><span>unique creators</span></div>
+      </div>
+      ${sparkline(history)}
+      ${gtText ? `<p class="muted" style="font-size:12px;margin:2px 0">${esc(gtText)}</p>` : ""}
+      ${links ? `<p class="trend-links">${links}</p>` : ""}
+    </article>`;
+  }
+
+  function fetchTrends() {
+    fetch("/api/trends").then((r) => r.json()).then((data) => {
+      const topics = (data.topics || []).filter(Boolean);
+      $("trendTracker").hidden = topics.length === 0;
+      if (!topics.length) return;
+      Promise.all(topics.map((t) =>
+        fetch(`/api/trends/${encodeURIComponent(t.topic)}?days=30`).then((r) => r.json())
+      )).then((details) => {
+        $("trendCards").innerHTML = details.map((d) => trendCard(d.latest.topic, d.latest, d.history)).join("");
+      });
+    }).catch(() => { $("trendTracker").hidden = true; });
+  }
+
   // -------------------------------------------------------------- fetch --
   function fetchToday() {
     return fetch("/api/radar").then((r) => r.json()).then(render).catch(() => {
@@ -263,4 +319,5 @@
   });
 
   fetchToday();
+  fetchTrends();
 })();

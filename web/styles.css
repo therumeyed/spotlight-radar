@@ -113,6 +113,28 @@ main { padding: 28px 24px 48px; max-width: 1180px; margin: 0 auto; }
   .idea { grid-template-columns: 1fr; }
   .number { display: none; }
   .proof { grid-column: 1; }
+  .trend-stats { grid-template-columns: repeat(2, 1fr); }
 }
 
 button:focus-visible, a:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
+
+/* -------------------------------------------------------- trend tracker -- */
+.trend-tracker { margin-top: 24px; }
+.trend-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; margin-top: 12px; }
+.trend-card { background: var(--panel); border: 1px solid var(--line); border-radius: 13px; padding: 16px; }
+.trend-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.trend-badge { font-size: 11px; font-weight: 600; letter-spacing: .02em; padding: 4px 9px; border-radius: 999px; white-space: nowrap; }
+.trend-badge--collecting_baseline { color: var(--subtle); background: var(--page); border: 1px solid var(--line); }
+.trend-badge--new { color: #1d5fd6; background: #eaf1ff; }
+.trend-badge--emerging { color: #067647; background: #e9f9f0; }
+.trend-badge--accelerating { color: #a0157a; background: #fdeafa; }
+.trend-badge--sustained { color: var(--purple); background: var(--purple-soft); }
+.trend-badge--cooling { color: #a95516; background: #fff3ec; }
+.trend-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 8px; }
+.trend-stats div { display: flex; flex-direction: column; gap: 2px; }
+.trend-stats strong { font-size: 15px; }
+.trend-stats span { font-size: 11px; color: var(--subtle); }
+.sparkline { color: var(--purple); display: block; }
+.trend-links { font-size: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+.trend-links a { color: var(--purple); text-decoration: none; }
+.trend-links a:hover { text-decoration: underline; }
