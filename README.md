@@ -44,8 +44,10 @@ badge. Add the keys below and it goes **live**.
 | `TREND_CRAWL_INTERVAL_HOURS` | How often the tracker re-crawls each tracked topic. | `12` |
 | `TREND_TIKTOK_MAX_RESULTS` / `TREND_INSTAGRAM_MAX_RESULTS` | Per-platform result cap per crawl, per topic. | `50` / `50` |
 | `TREND_MIN_SNAPSHOTS` | Crawls needed before a topic can be classified (below this: "Collecting baseline"). | `2` |
-| `TREND_EMERGING_MIN_POSTS` / `TREND_EMERGING_MIN_GROWTH_PCT` | Thresholds for the "Emerging" classification. | `5` / `50` |
+| `TREND_EMERGING_MIN_POSTS` / `TREND_EMERGING_MIN_CREATORS` / `TREND_EMERGING_MIN_GROWTH_PCT` | Thresholds for the "Emerging" classification — posts, DISTINCT creators (anti-gaming), growth %. | `5` / `3` / `50` |
 | `TREND_COOLING_MAX_GROWTH_PCT` | Growth % at or below which a topic is classified "Cooling". | `-20` |
+| `TREND_DISCOVERY_INTERVAL_HOURS` | How often auto-discovery re-crawls the broad seed searches for new candidates. | `24` |
+| `TREND_DISCOVERY_MIN_SCORE` | Minimum rank_trends() score for a discovered candidate to qualify for auto-tracking. | `0.5` |
 
 > **Note on the Apify actors:** actor input/output shapes vary between actors, so the
 > parsers in `sources.py` are deliberately defensive — when you plug in your real key,
@@ -111,20 +113,19 @@ says so explicitly instead of showing a fake post.
 **Trend velocity tracker (optional, off by default):** the single-crawl signals above
 answer "what does today's crawl show"; the tracker answers "is this actually growing."
 Counts only, by design — it tracks HOW MANY posts are appearing per topic and how fast
-that's changing, not the posts themselves (no url, creator, or engagement is kept). For
-each tracked topic it keeps a durable ledger of post IDs ever seen (platform + post ID +
-publish time — the bare minimum needed to tell a genuinely new post from one already
-counted), then on every scheduled crawl computes real growth — new posts this crawl, new
-in the last 24h vs the previous 24h (also 3d/7d) — and classifies the topic's lifecycle
-stage:
+that's changing, not the posts themselves (no url or engagement is kept). For each
+tracked topic it keeps a durable ledger of post IDs ever seen (platform + post ID +
+publish time + creator ID — see below), then on every scheduled crawl computes real
+growth — new posts this crawl, new in the last 24h vs the previous 24h (also 3d/7d) —
+and classifies the topic's lifecycle stage:
 
 - **Collecting baseline** — not enough crawl history yet to claim anything (the first
   crawl for a topic is *always* this; it takes `TREND_MIN_SNAPSHOTS` crawls before any
   other label is possible).
 - **New** — posts just started appearing where there were none before.
 - **Emerging** / **Accelerating** — real growth clearing the configured thresholds
-  (`TREND_EMERGING_MIN_POSTS`/`_GROWTH_PCT`); "Accelerating" additionally means growth
-  is speeding up crawl-over-crawl, not just continuing.
+  (`TREND_EMERGING_MIN_POSTS`/`_CREATORS`/`_GROWTH_PCT`); "Accelerating" additionally
+  means growth is speeding up crawl-over-crawl, not just continuing.
 - **Sustained** — active, but growth has levelled off.
 - **Cooling** — activity is declining (`TREND_COOLING_MAX_GROWTH_PCT`).
 
@@ -136,10 +137,26 @@ what turns that into "12 of those 50 are from the last 24h, up from 4 yesterday"
 actual velocity signal. Relatedly: if a crawl's search hits its configured result cap,
 that run's counts carry a `hit_result_cap` flag and the UI shows them as "N+" ("at
 least N") rather than a precise total — a capped search may have missed genuinely new
-posts beyond what it fetched. TikTok's search is sorted newest-first
-(`sort_by=date`) specifically so a capped crawl still sees the most recent posts rather
-than an arbitrary/most-engaging slice; Instagram's actor has no such sort option (its
-documented input schema has none), so that one takes whatever order it returns.
+posts beyond what it fetched.
+
+**TikTok is the primary velocity source; Instagram is supporting evidence only.**
+TikTok's search is sorted newest-first (`sort_by=date`) specifically so a capped crawl
+still sees the most recent posts rather than an arbitrary slice. Instagram's actor has
+no such sort option at all (checked its documented input schema — there isn't one), so
+its result order can't be trusted to represent "what's new" the way TikTok's can. Every
+primary number on a card (new posts, growth %, classification) is computed from TikTok
+alone; Instagram's count for the same topic is still recorded and shown as a small
+"+N on Instagram, supporting" line, but never counted toward the primary total or the
+classification. Swap this weighting if a more suitable Instagram actor (one with a
+genuine recency sort) is introduced.
+
+**creator_id is kept in the ledger but never displayed**, purely to stop one prolific
+account from manufacturing a false "emerging" signal on its own: the Emerging/
+Accelerating classification requires posts from at least `TREND_EMERGING_MIN_CREATORS`
+*distinct* creators, not just a raw post count. Ten posts from one account reads as
+"Sustained"; ten posts from ten different accounts can read as "Emerging" — same post
+count, different story, because the second one is real distributed momentum and the
+first might just be one enthusiastic (or automated) poster.
 
 Google Trends (DataForSEO or the free fallback) is used here only to *corroborate* — a
 "does search interest agree" check — never to supply post/view counts itself. When
@@ -149,14 +166,27 @@ score.
 
 **Which topics get tracked** is decided fresh every crawl cycle, not fixed once: it's
 the union of any manual pins (`TREND_TRACK_TOPICS`, optional), today's top
-`TREND_AUTO_TRACK_COUNT` micro-trends pulled straight from the *same* daily crawl's
-rank_trends() output (no separate discovery crawl — this reuses the trend detection
-the app already does, so tracking "crafts" the whole category isn't the point; tracking
-the specific things rank_trends() surfaces, like "punch needle kit," is), and anything
-still within `TREND_TOPIC_RETENTION_DAYS` of its last crawl even if it dropped out of
-today's top picks — so a fading trend gets to show "Cooling" instead of just vanishing.
-The total tracked set is capped at `TREND_AUTO_TRACK_MAX` regardless, so cost stays
-bounded no matter how much the daily top-N churns.
+`TREND_AUTO_TRACK_COUNT` *qualified* candidates from `engine.discover_trends()`, and
+anything still within `TREND_TOPIC_RETENTION_DAYS` of its last crawl even if it dropped
+out of today's top picks — so a fading trend gets to show "Cooling" instead of just
+vanishing. The total tracked set is capped at `TREND_AUTO_TRACK_MAX` regardless, so cost
+stays bounded no matter how much discovery churns.
+
+`discover_trends()` runs broad seed searches (`RADAR_KEYWORDS` — already "crafts,
+craftok, diy crafts, craft ideas, handmade, ..." by default), clusters the recurring
+hashtags/phrases those searches surface, merges in DataForSEO/Google Trends rising
+queries, and scores the result — the same `collect()` + `rank_trends()` pipeline the
+dashboard's own ideas already use, just called independently of the once-per-calendar-
+day report cache. A candidate "qualifies" for auto-tracking once its score clears
+`TREND_DISCOVERY_MIN_SCORE`. This refreshes on its own cadence
+(`TREND_DISCOVERY_INTERVAL_HOURS`, default once/day) — deliberately decoupled from the
+per-topic tracking cadence (`TREND_CRAWL_INTERVAL_HOURS`, default every 12h), because
+running a full discovery crawl every 12h instead of once/day roughly doubles the
+aggregate-crawl cost (see Deploying below). Set them equal for genuinely
+every-scheduled-run discovery if that's worth the extra spend to you. Discovery only
+ever runs from the scheduler's own background loop, never from an incoming request —
+`/api/health`/`/api/trends` only ever read whatever was last discovered, so a slow live
+crawl can't make a health check look like the service is down.
 
 ## Endpoints
 
@@ -190,3 +220,12 @@ changing. Lower `TREND_AUTO_TRACK_MAX`, `TREND_TIKTOK_MAX_RESULTS`/
 `TREND_INSTAGRAM_MAX_RESULTS`, or raise `TREND_CRAWL_INTERVAL_HOURS` to trade coverage
 for cost. Set `TREND_AUTO_TRACK_COUNT=0` (with one `TREND_TRACK_TOPICS` pin) to go back
 to tracking a single fixed topic for a cheaper pilot.
+
+**Discovery adds effectively nothing on top of that at the default cadence.**
+`TREND_DISCOVERY_INTERVAL_HOURS=24` runs the same full aggregate crawl (~180 TikTok +
+300 Instagram results worst case, ~$1.05–1.15) that `RADAR_KEYWORDS` was already paying
+for once/day to build the dashboard — this just guarantees it happens on schedule
+instead of waiting on a visitor. The cost only goes up if you lower
+`TREND_DISCOVERY_INTERVAL_HOURS` below 24h: set it equal to `TREND_CRAWL_INTERVAL_HOURS`
+(12h) for genuinely every-scheduled-run discovery, and that roughly doubles the
+aggregate crawl to ~$60–70/month for discovery alone, on top of everything above.

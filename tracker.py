@@ -43,10 +43,11 @@ def run(topic):
 
     snapshot = trends.record_snapshot(topic, all_posts, hit_result_cap=hit_cap, google_trends=gt)
     _log.info("trend tracker: %s -> %s (new_this_crawl=%s new_24h=%s prev_24h=%s growth=%s%% "
-              "tiktok=%d instagram=%d hit_cap=%s)",
+              "ig_supporting_24h=%s tiktok_fetched=%d instagram_fetched=%d hit_cap=%s)",
               topic, snapshot["classification"], snapshot["new_posts_this_crawl"],
               snapshot["new_posts_24h"], snapshot["prev_posts_24h"],
-              snapshot["growth_pct_24h"], len(tiktok_posts), len(ig_posts), hit_cap)
+              snapshot["growth_pct_24h"], snapshot["instagram_new_24h"],
+              len(tiktok_posts), len(ig_posts), hit_cap)
     return snapshot
 
 

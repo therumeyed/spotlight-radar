@@ -464,8 +464,11 @@ TREND_INSTAGRAM_MAX_RESULTS = int(os.environ.get("TREND_INSTAGRAM_MAX_RESULTS", 
 
 def crawl_tiktok_posts(keyword, max_results=None):
     """Minimal structured TikTok posts for the longitudinal tracker -- just
-    enough to dedupe and date a post (platform, post_id, published_at). No
-    creator/url/engagement: the tracker only needs counts, not post content.
+    enough to dedupe/date a post and identify its creator (platform, post_id,
+    published_at, creator_id). No url/caption/engagement: the tracker only
+    needs counts, not post content. creator_id is kept ONLY to detect one
+    account dominating a topic's post count (a false emerging signal) -- it's
+    never surfaced on a trend card, just used internally to gate classification.
     Returns (posts, hit_cap) -- hit_cap is True when the actor returned >= the
     requested cap, i.e. there were likely more matching posts than we asked
     for, so any count from this crawl should be read as "at least N," not N.
@@ -476,11 +479,12 @@ def crawl_tiktok_posts(keyword, max_results=None):
     engagement posts and never surface what's actually new today.
 
     Field mapping note (same caveat the README already gives for the aggregate
-    path): this actor's docs don't pin down an exact field name for the video
-    ID, only that one exists ("Video ID... Complete metadata from TikTok
-    API"). The name below matches TikTok's own native aweme-object shape,
-    which this actor is understood to pass through -- sanity-check against
-    one real live run before trusting this at volume."""
+    path): this actor's docs don't pin down exact field names for the video ID
+    or the author's handle, only that they exist ("Video ID... Author profile
+    information... Complete metadata from TikTok API"). The names below match
+    TikTok's own native aweme-object shape, which this actor is understood to
+    pass through -- sanity-check against one real live run before trusting
+    this at volume."""
     cap = max_results or TREND_TIKTOK_MAX_RESULTS
     if not live():
         return [], False
@@ -493,7 +497,11 @@ def crawl_tiktok_posts(keyword, max_results=None):
         if not post_id:
             continue    # can't dedupe/track without a stable id -- skip rather than guess one
         published_at = _iso_from_ts(info.get("create_time") or info.get("createTime"))
-        posts.append({"platform": "tiktok", "post_id": post_id, "published_at": published_at})
+        creator_id = ((info.get("author") or {}).get("uid")
+                      or (info.get("author") or {}).get("unique_id")
+                      or (it.get("authorMeta") or {}).get("id") or "") or None
+        posts.append({"platform": "tiktok", "post_id": post_id, "published_at": published_at,
+                      "creator_id": creator_id})
     return posts, len(items) >= cap
 
 
@@ -503,7 +511,9 @@ def crawl_instagram_posts(hashtag, max_results=None):
 
     No sort-by-recency input exists on this actor (checked its documented
     input schema: hashtags, keywordSearch, resultsType, resultsLimit -- no
-    order/date field) -- whatever order it returns is what we get."""
+    order/date field) -- whatever order it returns is what we get. Per the
+    same reasoning, its counts aren't used as the primary velocity signal --
+    see trends.py."""
     cap = max_results or TREND_INSTAGRAM_MAX_RESULTS
     if not live():
         return [], False
@@ -514,7 +524,9 @@ def crawl_instagram_posts(hashtag, max_results=None):
         if not post_id:
             continue
         published_at = _iso_from_ts(it.get("timestamp") or it.get("takenAt") or it.get("takenAtTimestamp"))
-        posts.append({"platform": "instagram", "post_id": post_id, "published_at": published_at})
+        creator_id = it.get("ownerId") or it.get("ownerUsername") or it.get("username") or None
+        posts.append({"platform": "instagram", "post_id": post_id, "published_at": published_at,
+                      "creator_id": creator_id})
     return posts, len(items) >= cap
 
 

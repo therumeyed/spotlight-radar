@@ -50,7 +50,10 @@ def health():
                                 "currently_tracked": scheduler.select_topics() if scheduler.ENABLED else [],
                                 "interval_hours": scheduler.INTERVAL_HOURS,
                                 "auto_track_count": scheduler.AUTO_TRACK_COUNT,
-                                "auto_track_max": scheduler.AUTO_TRACK_MAX}}
+                                "auto_track_max": scheduler.AUTO_TRACK_MAX,
+                                "discovery_interval_hours": scheduler.DISCOVERY_INTERVAL_HOURS,
+                                "discovery_last_run": (scheduler._discovery_cache["at"].isoformat()
+                                                        if scheduler._discovery_cache["at"] else None)}}
 
 
 @app.get("/api/trends")

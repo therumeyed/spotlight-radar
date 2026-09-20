@@ -185,6 +185,7 @@
     if (!isCurrent) notes.push("No longer in the actively tracked set — showing its last known numbers.");
     else if (cls === "collecting_baseline") notes.push("Still establishing a baseline — classification and growth firm up after a couple more crawls.");
     else if (gt) notes.push(gt.corroborated ? "Google Trends agrees" : "Google Trends: no corroboration yet");
+    if (snap.instagram_new_24h) notes.push(`+${snap.instagram_new_24h} on Instagram, 24h (supporting evidence only — not part of the count above)`);
     return `<article class="trend-card${isCurrent ? "" : " trend-card--stale"}">
       <div class="trend-card-head"><strong>${esc(topic)}</strong>
         <span class="trend-badge trend-badge--${esc(cls)}">${esc(TREND_LABEL[cls] || cls)}</span></div>

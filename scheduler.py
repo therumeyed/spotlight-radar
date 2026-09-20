@@ -14,11 +14,19 @@ WHICH topics get tracked is decided fresh every cycle by select_topics(),
 not a fixed list set once: it's the union of
 
   1. TREND_TRACK_TOPICS -- an optional manual pin list, always tracked.
-  2. Today's top TREND_AUTO_TRACK_COUNT micro-trends, read from the SAME
-     daily report engine.daily() already builds (rank_trends() output) --
-     no separate discovery crawl, no extra Apify spend beyond the daily
-     build that already happens. This is deliberately the actual discovery
-     mechanism already in this app, not a second one.
+  2. Today's top TREND_AUTO_TRACK_COUNT QUALIFIED candidates from
+     engine.discover_trends() -- broad seed searches (RADAR_KEYWORDS, which
+     already includes "crafts", "diy crafts", "handmade", "craft ideas")
+     clustered into recurring hashtags/phrases, corroborated by DataForSEO/
+     Google Trends rising queries, same as the dashboard's own trend
+     detection. A candidate "qualifies" by clearing TREND_DISCOVERY_MIN_SCORE.
+     This crawl runs on its OWN cadence (TREND_DISCOVERY_INTERVAL_HOURS,
+     cached in-process between calls) -- deliberately decoupled from the
+     per-topic tracking cadence below, since running a full discovery crawl
+     that often would roughly double the aggregate-crawl cost. Defaults to
+     once/day (matching what this crawl already cost before any of this
+     existed); set it equal to TREND_CRAWL_INTERVAL_HOURS for genuinely
+     every-scheduled-run discovery if the extra spend is worth it to you.
   3. Anything already accumulating history within TREND_TOPIC_RETENTION_DAYS
      -- so a topic that drops out of today's top picks still gets a few
      more crawls to show its real trajectory (including cooling) instead of
@@ -41,27 +49,55 @@ import trends
 
 _log = logging.getLogger(__name__)
 
-INTERVAL_HOURS       = float(os.environ.get("TREND_CRAWL_INTERVAL_HOURS", "12"))
-MANUAL_TOPICS        = [t.strip() for t in os.environ.get("TREND_TRACK_TOPICS", "").split(",") if t.strip()]
-AUTO_TRACK_COUNT      = int(os.environ.get("TREND_AUTO_TRACK_COUNT", "3"))
-AUTO_TRACK_MAX        = int(os.environ.get("TREND_AUTO_TRACK_MAX", "5"))
-TOPIC_RETENTION_DAYS = float(os.environ.get("TREND_TOPIC_RETENTION_DAYS", "5"))
+INTERVAL_HOURS        = float(os.environ.get("TREND_CRAWL_INTERVAL_HOURS", "12"))
+MANUAL_TOPICS         = [t.strip() for t in os.environ.get("TREND_TRACK_TOPICS", "").split(",") if t.strip()]
+AUTO_TRACK_COUNT       = int(os.environ.get("TREND_AUTO_TRACK_COUNT", "3"))
+AUTO_TRACK_MAX         = int(os.environ.get("TREND_AUTO_TRACK_MAX", "5"))
+TOPIC_RETENTION_DAYS  = float(os.environ.get("TREND_TOPIC_RETENTION_DAYS", "5"))
+DISCOVERY_INTERVAL_HOURS = float(os.environ.get("TREND_DISCOVERY_INTERVAL_HOURS", "24"))
+DISCOVERY_MIN_SCORE      = float(os.environ.get("TREND_DISCOVERY_MIN_SCORE", "0.5"))
 ENABLED = os.environ.get("TREND_TRACKING_ENABLED", "").strip().lower() in ("1", "true", "yes")
 
 _stop = threading.Event()
+_discovery_cache = {"trends": [], "at": None}
+
+
+def _discovery_due():
+    if _discovery_cache["at"] is None:
+        return True
+    now = _dt.datetime.now(_dt.timezone.utc)
+    return (now - _discovery_cache["at"]).total_seconds() >= DISCOVERY_INTERVAL_HOURS * 3600
+
+
+def _refresh_discovery_if_due():
+    """Re-run trend discovery (a real Apify/DataForSEO crawl, potentially
+    slow) if the cached result is due for a refresh. ONLY ever called from
+    the scheduler's own background loop -- never from a request handler.
+    Render's own health checks poll /api/health, and select_topics() (below)
+    is called from there; if IT triggered this, a health check could block
+    for however long a live crawl takes and read as the service being down.
+    In-process only: a redeploy resets this cache, so the loop's first pass
+    after a restart refreshes immediately regardless of how recently one ran
+    before the restart -- same restart-safe trade-off as the rest of this
+    feature, worth knowing if redeploys are frequent."""
+    if not _discovery_due():
+        return
+    try:
+        _discovery_cache["trends"] = engine.discover_trends()
+    except Exception:
+        _log.exception("trend scheduler: discovery crawl failed")
+        _discovery_cache["trends"] = []
+    _discovery_cache["at"] = _dt.datetime.now(_dt.timezone.utc)
 
 
 def select_topics():
-    """This cycle's tracked topics -- see module docstring. Read-only and
-    cheap (one cached report read + one DB query); safe to call from
-    /api/health or /api/trends for visibility, not just from the loop."""
-    auto = []
-    if AUTO_TRACK_COUNT > 0:
-        try:
-            report = engine.daily()   # cached -- free if today's report is already built
-            auto = [t["term"] for t in (report.get("trends") or [])[:AUTO_TRACK_COUNT] if t.get("term")]
-        except Exception:
-            _log.exception("trend scheduler: could not read today's report for auto-topic selection")
+    """This cycle's tracked topics -- see module docstring. Purely reads the
+    last discovery result (whatever's cached, possibly empty on first call
+    before the loop has run) plus a cheap DB query -- never triggers a crawl
+    itself, so it's safe to call from any request handler, not just the loop."""
+    auto = [t["term"] for t in _discovery_cache["trends"]
+            if t.get("term") and t.get("score", 0) >= DISCOVERY_MIN_SCORE][:AUTO_TRACK_COUNT] \
+        if AUTO_TRACK_COUNT > 0 else []
     retained = trends.recently_tracked_topics(TOPIC_RETENTION_DAYS)
 
     ordered = []
@@ -96,6 +132,7 @@ def _seconds_until_next_run(topics):
 
 def _loop():
     while not _stop.is_set():
+        _refresh_discovery_if_due()   # the ONLY place this runs -- see its docstring
         topics = select_topics()
         wait_s = _seconds_until_next_run(topics)
         if wait_s > 0:
@@ -128,9 +165,10 @@ def start():
     start._started = True
     th = threading.Thread(target=_loop, name="trend-scheduler", daemon=True)
     th.start()
-    _log.info("trend scheduler: started (auto-track top %d, max %d concurrent, "
-              "%gd retention, every %gh)", AUTO_TRACK_COUNT, AUTO_TRACK_MAX,
-              TOPIC_RETENTION_DAYS, INTERVAL_HOURS)
+    _log.info("trend scheduler: started (auto-track top %d @ score>=%.2f, max %d concurrent, "
+              "%gd retention, crawl every %gh, discovery every %gh)",
+              AUTO_TRACK_COUNT, DISCOVERY_MIN_SCORE, AUTO_TRACK_MAX,
+              TOPIC_RETENTION_DAYS, INTERVAL_HOURS, DISCOVERY_INTERVAL_HOURS)
 
 
 def stop():

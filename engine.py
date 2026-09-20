@@ -342,3 +342,20 @@ def daily(force=False):
     store.save(today, sources.TOPIC, sources.GEO, result)
     _save_today_cache(result)
     return result
+
+
+def discover_trends():
+    """Fresh candidate topics for the longitudinal tracker's auto-discovery --
+    NOT the once-per-calendar-day daily() report. Runs the same collect() +
+    rank_trends() pipeline the dashboard uses -- same RADAR_KEYWORDS seed list
+    ("crafts", "diy crafts", "handmade", "craft ideas" are already in it by
+    default), same hashtag-clustering and DataForSEO/Google-Trends-rising
+    merge -- but independent of the daily cache, so it can run on its own
+    schedule (see scheduler.py's TREND_DISCOVERY_INTERVAL_HOURS) rather than
+    being frozen to whatever the first request of the day happened to build.
+
+    Always a real crawl when live (spends real Apify/DataForSEO budget) --
+    callers are expected to cache/cadence-limit this themselves, not call it
+    on every request."""
+    collected = collect()
+    return rank_trends(collected, top=10)
