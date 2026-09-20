@@ -169,10 +169,15 @@
   function trendCard(topic, snap, history) {
     const cls = snap.classification;
     const growth = snap.growth_pct_24h;
-    const growthText = growth == null ? "—" : `${growth > 0 ? "+" : ""}${growth}%`;
+    // A baseline classification means the backend itself doesn't trust this
+    // number yet (usually a tiny/zero denominator makes the % meaningless,
+    // e.g. 50 new vs 1 previous = "+4900%") -- never show it as if it were real.
+    const growthText = (cls === "collecting_baseline" || growth == null) ? "—"
+      : `${growth > 0 ? "+" : ""}${growth}%`;
     const gt = snap.google_trends;
-    const gtText = cls === "collecting_baseline" ? "" :
-      gt ? (gt.corroborated ? "Google Trends agrees" : "Google Trends: no corroboration yet") : "";
+    const gtText = cls === "collecting_baseline"
+      ? "Still establishing a baseline — classification and growth firm up after a couple more crawls."
+      : gt ? (gt.corroborated ? "Google Trends agrees" : "Google Trends: no corroboration yet") : "";
     const links = (snap.sample_posts || []).slice(0, 3).map((p) =>
       `<a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">${esc(p.platform)}${p.creator ? " · @" + esc(p.creator) : ""}</a>`
     ).join(" · ");
