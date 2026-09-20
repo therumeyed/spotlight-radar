@@ -463,49 +463,47 @@ TREND_INSTAGRAM_MAX_RESULTS = int(os.environ.get("TREND_INSTAGRAM_MAX_RESULTS", 
 
 
 def crawl_tiktok_posts(keyword, max_results=None):
-    """Structured TikTok posts for one keyword, for the longitudinal tracker.
+    """Minimal structured TikTok posts for the longitudinal tracker -- just
+    enough to dedupe and date a post (platform, post_id, published_at). No
+    creator/url/engagement: the tracker only needs counts, not post content.
     Returns (posts, hit_cap) -- hit_cap is True when the actor returned >= the
     requested cap, i.e. there were likely more matching posts than we asked
-    for (worth knowing, since it silently truncates what "new posts" can see).
+    for, so any count from this crawl should be read as "at least N," not N.
+
+    sort_by="date" (not the aggregate build_radar() path's "relevance"):
+    velocity needs the newest posts, not the most engaging ones -- otherwise
+    a search capped at N results could fill up entirely with old high-
+    engagement posts and never surface what's actually new today.
 
     Field mapping note (same caveat the README already gives for the aggregate
-    path): this actor's docs don't pin down exact field names for the video ID
-    or engagement stats, only that they exist ("Video ID... statistics...
-    Complete metadata from TikTok API"). The names below match TikTok's own
-    native aweme-object shape, which this actor is understood to pass through
-    -- sanity-check against one real live run before trusting this at volume."""
+    path): this actor's docs don't pin down an exact field name for the video
+    ID, only that one exists ("Video ID... Complete metadata from TikTok
+    API"). The name below matches TikTok's own native aweme-object shape,
+    which this actor is understood to pass through -- sanity-check against
+    one real live run before trusting this at volume."""
     cap = max_results or TREND_TIKTOK_MAX_RESULTS
     if not live():
         return [], False
     items = _run(TIKTOK_ACTOR, {"query": keyword, "region": GEO, "max_results": cap,
-                                "sort_by": "relevance"})
+                                "sort_by": "date"})
     posts = []
     for it in items:
         info = it.get("aweme_info") or it
-        stats = info.get("statistics") or info.get("stats") or {}
         post_id = str(info.get("aweme_id") or info.get("id") or it.get("id") or "").strip()
         if not post_id:
             continue    # can't dedupe/track without a stable id -- skip rather than guess one
-        author = ((info.get("author") or {}).get("unique_id")
-                  or (info.get("author") or {}).get("nickname")
-                  or (it.get("authorMeta") or {}).get("name") or "")
-        url = info.get("share_url") or it.get("webVideoUrl") or it.get("shareUrl") or ""
-        posts.append({
-            "platform": "tiktok", "post_id": post_id, "url": url, "creator": author,
-            "published_at": _iso_from_ts(info.get("create_time") or info.get("createTime")),
-            "views": int(_num(stats.get("play_count") or stats.get("playCount") or 0)),
-            "likes": int(_num(stats.get("digg_count") or stats.get("diggCount")
-                               or stats.get("like_count") or 0)),
-            "comments": int(_num(stats.get("comment_count") or stats.get("commentCount") or 0)),
-            "shares": int(_num(stats.get("share_count") or stats.get("shareCount") or 0)),
-        })
+        published_at = _iso_from_ts(info.get("create_time") or info.get("createTime"))
+        posts.append({"platform": "tiktok", "post_id": post_id, "published_at": published_at})
     return posts, len(items) >= cap
 
 
 def crawl_instagram_posts(hashtag, max_results=None):
-    """Structured Instagram posts for one hashtag, for the longitudinal tracker.
-    Returns (posts, hit_cap). Field names per the official actor's documented
-    output schema (id/shortCode, ownerUsername, timestamp, likesCount, etc)."""
+    """Minimal structured Instagram posts for the longitudinal tracker -- see
+    crawl_tiktok_posts. Returns (posts, hit_cap).
+
+    No sort-by-recency input exists on this actor (checked its documented
+    input schema: hashtags, keywordSearch, resultsType, resultsLimit -- no
+    order/date field) -- whatever order it returns is what we get."""
     cap = max_results or TREND_INSTAGRAM_MAX_RESULTS
     if not live():
         return [], False
@@ -515,20 +513,8 @@ def crawl_instagram_posts(hashtag, max_results=None):
         post_id = str(it.get("id") or it.get("shortCode") or "").strip()
         if not post_id:
             continue
-        url = it.get("url") or it.get("postUrl") or it.get("permalink") or ""
-        author = it.get("ownerUsername") or it.get("username") or ""
-        likes = _num(it.get("likesCount") or it.get("likes") or 0)
-        views = _num(it.get("videoPlayCount") or it.get("igPlayCount")
-                      or it.get("videoViewCount") or 0)
-        posts.append({
-            "platform": "instagram", "post_id": post_id, "url": url, "creator": author,
-            "published_at": _iso_from_ts(it.get("timestamp") or it.get("takenAt")
-                                          or it.get("takenAtTimestamp")),
-            "views": int(views),
-            "likes": int(likes) if likes >= 0 else 0,   # -1 means "hidden", never fabricate a count
-            "comments": int(_num(it.get("commentsCount") or it.get("comments") or 0)),
-            "shares": int(_num(it.get("reshareCount") or 0)),
-        })
+        published_at = _iso_from_ts(it.get("timestamp") or it.get("takenAt") or it.get("takenAtTimestamp"))
+        posts.append({"platform": "instagram", "post_id": post_id, "published_at": published_at})
     return posts, len(items) >= cap
 
 

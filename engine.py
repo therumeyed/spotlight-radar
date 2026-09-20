@@ -146,9 +146,9 @@ def _velocity_note(term):
         return ""
     growth = snap.get("growth_pct_24h")
     growth_txt = ("%+.0f%% vs the previous 24h" % growth) if growth is not None else "new activity"
-    return (" Longitudinal tracking: %s (%s, %d new posts/%d creators in the last 24h)."
-            % (snap["classification"].replace("_", " "), growth_txt,
-               snap["new_posts_24h"], snap["unique_creators_24h"]))
+    count_txt = ("at least %d" % snap["new_posts_24h"]) if snap.get("hit_result_cap") else str(snap["new_posts_24h"])
+    return (" Longitudinal tracking: %s (%s, %s new posts in the last 24h)."
+            % (snap["classification"].replace("_", " "), growth_txt, count_txt))
 
 
 def _llm_ideas(topic, trends):

@@ -166,38 +166,38 @@
     </svg>`;
   }
 
+  // "at least N" once a crawl hit its result cap -- the true count could be
+  // higher, so a bare number would overstate confidence in it.
+  function countText(n, capped) {
+    return capped ? `${n}+` : String(n);
+  }
+
   function trendCard(topic, snap, history, isCurrent) {
     const cls = snap.classification;
-    const growth = snap.growth_pct_24h;
+    const capped = !!snap.hit_result_cap;
     // A baseline classification means the backend itself doesn't trust this
     // number yet (usually a tiny/zero denominator makes the % meaningless,
     // e.g. 50 new vs 1 previous = "+4900%") -- never show it as if it were real.
-    const growthText = (cls === "collecting_baseline" || growth == null) ? "—"
-      : `${growth > 0 ? "+" : ""}${growth}%`;
+    const pct = (g) => (cls === "collecting_baseline" || g == null) ? "—" : `${g > 0 ? "+" : ""}${g}%`;
     const gt = snap.google_trends;
-    let note = "";
-    if (!isCurrent) {
-      note = "No longer in the actively tracked set — showing its last known numbers.";
-    } else if (cls === "collecting_baseline") {
-      note = "Still establishing a baseline — classification and growth firm up after a couple more crawls.";
-    } else if (gt) {
-      note = gt.corroborated ? "Google Trends agrees" : "Google Trends: no corroboration yet";
-    }
-    const links = (snap.sample_posts || []).slice(0, 3).map((p) =>
-      `<a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">${esc(p.platform)}${p.creator ? " · @" + esc(p.creator) : ""}</a>`
-    ).join(" · ");
+    const notes = [];
+    if (capped) notes.push("Hit its result cap this crawl — counts are “at least”, the real numbers may be higher.");
+    if (!isCurrent) notes.push("No longer in the actively tracked set — showing its last known numbers.");
+    else if (cls === "collecting_baseline") notes.push("Still establishing a baseline — classification and growth firm up after a couple more crawls.");
+    else if (gt) notes.push(gt.corroborated ? "Google Trends agrees" : "Google Trends: no corroboration yet");
     return `<article class="trend-card${isCurrent ? "" : " trend-card--stale"}">
       <div class="trend-card-head"><strong>${esc(topic)}</strong>
         <span class="trend-badge trend-badge--${esc(cls)}">${esc(TREND_LABEL[cls] || cls)}</span></div>
       <div class="trend-stats">
-        <div><strong>${snap.new_posts_24h}</strong><span>new posts, 24h</span></div>
-        <div><strong>${snap.prev_posts_24h}</strong><span>previous 24h</span></div>
-        <div><strong>${growthText}</strong><span>growth</span></div>
-        <div><strong>${snap.unique_creators_24h}</strong><span>unique creators</span></div>
+        <div><strong>${countText(snap.new_posts_this_crawl, capped)}</strong><span>new this crawl</span></div>
+        <div><strong>${countText(snap.new_posts_24h, capped)}</strong><span>new, 24h</span></div>
+        <div><strong>${countText(snap.prev_posts_24h, capped)}</strong><span>previous 24h</span></div>
+        <div><strong>${pct(snap.growth_pct_24h)}</strong><span>change</span></div>
+        <div><strong>${countText(snap.new_posts_7d, capped)}</strong><span>new, 7d</span></div>
+        <div><strong>${pct(snap.growth_pct_7d)}</strong><span>7d change</span></div>
       </div>
       ${sparkline(history)}
-      ${note ? `<p class="muted" style="font-size:12px;margin:2px 0">${esc(note)}</p>` : ""}
-      ${links ? `<p class="trend-links">${links}</p>` : ""}
+      ${notes.map((n) => `<p class="muted" style="font-size:12px;margin:2px 0">${esc(n)}</p>`).join("")}
     </article>`;
   }
 

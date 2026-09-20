@@ -131,11 +131,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--purple); outlin
 .trend-badge--accelerating { color: #a0157a; background: #fdeafa; }
 .trend-badge--sustained { color: var(--purple); background: var(--purple-soft); }
 .trend-badge--cooling { color: #a95516; background: #fff3ec; }
-.trend-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 8px; }
+.trend-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 8px; margin-bottom: 8px; }
 .trend-stats div { display: flex; flex-direction: column; gap: 2px; }
 .trend-stats strong { font-size: 15px; }
 .trend-stats span { font-size: 11px; color: var(--subtle); }
 .sparkline { color: var(--purple); display: block; }
-.trend-links { font-size: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
-.trend-links a { color: var(--purple); text-decoration: none; }
-.trend-links a:hover { text-decoration: underline; }

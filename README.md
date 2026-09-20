@@ -44,7 +44,7 @@ badge. Add the keys below and it goes **live**.
 | `TREND_CRAWL_INTERVAL_HOURS` | How often the tracker re-crawls each tracked topic. | `12` |
 | `TREND_TIKTOK_MAX_RESULTS` / `TREND_INSTAGRAM_MAX_RESULTS` | Per-platform result cap per crawl, per topic. | `50` / `50` |
 | `TREND_MIN_SNAPSHOTS` | Crawls needed before a topic can be classified (below this: "Collecting baseline"). | `2` |
-| `TREND_EMERGING_MIN_POSTS` / `TREND_EMERGING_MIN_CREATORS` / `TREND_EMERGING_MIN_GROWTH_PCT` | Thresholds for the "Emerging" classification. | `5` / `3` / `50` |
+| `TREND_EMERGING_MIN_POSTS` / `TREND_EMERGING_MIN_GROWTH_PCT` | Thresholds for the "Emerging" classification. | `5` / `50` |
 | `TREND_COOLING_MAX_GROWTH_PCT` | Growth % at or below which a topic is classified "Cooling". | `-20` |
 
 > **Note on the Apify actors:** actor input/output shapes vary between actors, so the
@@ -74,12 +74,13 @@ engine.py    → collect → rank_trends (define "trending") → make_ideas (Cla
                 suppresses any live idea with no real example behind it → persists daily
 store.py     → optional Postgres history archive (no-op without DATABASE_URL) — the
                 durable copy; survives restarts/redeploys
-trends.py    → longitudinal trend tracking: a durable post-level ledger (dedup by
-                platform+post ID) + an append-only history of computed growth
-                snapshots per topic — 24h/3d/7d windows, velocity, acceleration,
-                lifecycle classification. Off without DATABASE_URL (no non-durable
-                fallback here — a velocity claim that doesn't survive a restart is
-                worse than no claim)
+trends.py    → longitudinal trend tracking: counts only (a durable post-ID
+                ledger — platform+post ID+publish time, nothing else) + an
+                append-only history of computed count snapshots per topic —
+                24h/3d/7d windows, velocity, acceleration, lifecycle
+                classification. Off without DATABASE_URL (no non-durable
+                fallback here — a velocity claim that doesn't survive a
+                restart is worse than no claim)
 tracker.py   → one crawl-and-snapshot cycle for one topic: pulls fresh posts,
                 merges into the ledger, records a snapshot. Never called from a
                 page request — only the scheduler or the manual ops trigger
@@ -109,20 +110,36 @@ says so explicitly instead of showing a fake post.
 
 **Trend velocity tracker (optional, off by default):** the single-crawl signals above
 answer "what does today's crawl show"; the tracker answers "is this actually growing."
-For each tracked topic it keeps a durable, deduplicated ledger of every post ever seen
-(by platform + post ID), then on every scheduled crawl computes real growth — new posts
-in the last 24h vs the previous 24h (also 3d/7d), unique creators, engagement — and
-classifies the topic's lifecycle stage:
+Counts only, by design — it tracks HOW MANY posts are appearing per topic and how fast
+that's changing, not the posts themselves (no url, creator, or engagement is kept). For
+each tracked topic it keeps a durable ledger of post IDs ever seen (platform + post ID +
+publish time — the bare minimum needed to tell a genuinely new post from one already
+counted), then on every scheduled crawl computes real growth — new posts this crawl, new
+in the last 24h vs the previous 24h (also 3d/7d) — and classifies the topic's lifecycle
+stage:
 
 - **Collecting baseline** — not enough crawl history yet to claim anything (the first
   crawl for a topic is *always* this; it takes `TREND_MIN_SNAPSHOTS` crawls before any
   other label is possible).
 - **New** — posts just started appearing where there were none before.
 - **Emerging** / **Accelerating** — real growth clearing the configured thresholds
-  (`TREND_EMERGING_MIN_POSTS`/`_CREATORS`/`_GROWTH_PCT`); "Accelerating" additionally
-  means growth is speeding up crawl-over-crawl, not just continuing.
+  (`TREND_EMERGING_MIN_POSTS`/`_GROWTH_PCT`); "Accelerating" additionally means growth
+  is speeding up crawl-over-crawl, not just continuing.
 - **Sustained** — active, but growth has levelled off.
 - **Cooling** — activity is declining (`TREND_COOLING_MAX_GROWTH_PCT`).
+
+**Why not just track the raw search-result count directly** (the obvious simpler
+approach): once a topic is popular enough to fill its own result cap, every crawl
+returns the max every time whether or not anything new happened — the number reads as a
+flat, uninformative "50, 50, 50" forever. Deduping by real post ID and publish date is
+what turns that into "12 of those 50 are from the last 24h, up from 4 yesterday" — an
+actual velocity signal. Relatedly: if a crawl's search hits its configured result cap,
+that run's counts carry a `hit_result_cap` flag and the UI shows them as "N+" ("at
+least N") rather than a precise total — a capped search may have missed genuinely new
+posts beyond what it fetched. TikTok's search is sorted newest-first
+(`sort_by=date`) specifically so a capped crawl still sees the most recent posts rather
+than an arbitrary/most-engaging slice; Instagram's actor has no such sort option (its
+documented input schema has none), so that one takes whatever order it returns.
 
 Google Trends (DataForSEO or the free fallback) is used here only to *corroborate* — a
 "does search interest agree" check — never to supply post/view counts itself. When
