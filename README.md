@@ -243,8 +243,8 @@ production incident's exact offenders) — belt-and-braces on top of belt-and-br
 not reversible) rather than waiting for it to age out of the retention window — used to
 clear those three topics' history once the bug was found.
 
-**Estimated Apify cost is visible in `/api/health`** (`estimated_daily_cost_usd`) and
-as a line on the Trend tracker section — derived from the currently-tracked topic
+**Estimated Apify cost is visible in `/api/health`** (`estimated_daily_cost_usd`) —
+ops-only, not surfaced on the dashboard — derived from the currently-tracked topic
 count, their caps (including any bumped to 200), and cadence, using Apify's published
 per-1000-result pricing. This is a worst-case estimate (assumes every crawl hits its
 cap), not real billing data — there's no Apify billing API wired in here.
