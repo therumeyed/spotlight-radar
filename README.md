@@ -44,7 +44,7 @@ badge. Add the keys below and it goes **live**.
 | `TREND_CRAWL_INTERVAL_HOURS` | How often the tracker re-crawls each tracked topic. | `12` |
 | `TREND_TIKTOK_MAX_RESULTS` / `TREND_INSTAGRAM_MAX_RESULTS` | Per-platform result cap per crawl, per topic. Instagram stays low deliberately — supporting evidence only. | `100` / `50` |
 | `TREND_TIKTOK_CAP_BUMP_THRESHOLD` / `TREND_TIKTOK_CAP_BUMPED_MAX` | Consecutive capped crawls before a topic's TikTok cap auto-bumps, and the ceiling it bumps to (never exceeded automatically). | `2` / `200` |
-| `TREND_EXCLUDED_TOPICS` | Comma-separated topics that must never be auto-selected (discovered or retained) by exact name. | `craft online` |
+| `TREND_EXCLUDED_TOPICS` | Comma-separated topics that must never be auto-selected (discovered or retained) by exact name. | `craft online,betfair exchange,asos sale,beauty brands salon` |
 | `TREND_MIN_SNAPSHOTS` | Crawls needed before a topic can be classified (below this: "Collecting baseline"). | `2` |
 | `TREND_EMERGING_MIN_POSTS` / `TREND_EMERGING_MIN_CREATORS` / `TREND_EMERGING_MIN_GROWTH_PCT` | Thresholds for the "Emerging" classification — posts, DISTINCT creators (anti-gaming), growth %. | `5` / `3` / `50` |
 | `TREND_COOLING_MAX_GROWTH_PCT` | Growth % at or below which a topic is classified "Cooling". | `-20` |
@@ -218,24 +218,49 @@ incoming request — `/api/health`/`/api/trends` only ever read whatever was las
 discovered, so a slow live crawl can't make a health check look like the service is
 down.
 
-**Discovered candidates are screened before they can ever be tracked.** A candidate
-whose term matches reference-lookup/dictionary-site search intent — crossword, puzzle,
-dictionary, clue, definition, synonym, wordle (`sources.BLOCKED_SEARCH_INTENT`) — is
-rejected outright, whatever its score. The same filter is applied to Google Trends
-corroboration's rising-query results, so a legitimate topic's corroboration data can't
-get drowned in unrelated crossword-clue noise either. `TREND_EXCLUDED_TOPICS` is a
-by-name denylist for a specific candidate that turned out to be noise after the fact —
-"craft online" is excluded by default: it cleared the score threshold but its
-corroboration was dominated by irrelevant crossword-site results, so it's blocked from
-ever being re-selected. `POST /api/trends/{topic}/purge` removes a topic's existing
-history outright (ops-only, not reversible) rather than waiting for it to age out of
-the retention window.
+**Discovered candidates are screened before they can ever be tracked, two ways.**
+First, a candidate whose term matches reference-lookup/dictionary-site search intent —
+crossword, puzzle, dictionary, clue, definition, synonym, wordle
+(`sources.BLOCKED_SEARCH_INTENT`) — is rejected outright, whatever its score. The same
+filter is applied to Google Trends corroboration's rising-query results, so a legitimate
+topic's corroboration data can't get drowned in unrelated crossword-clue noise either.
+
+Second — added after a production incident where "betfair exchange", "asos sale" and
+"beauty brands salon" got auto-tracked for several crawl cycles because a low-volume seed
+keyword's "related queries" pulled in broadly-trending-but-unrelated AU search terms —
+every candidate from every source (rising queries, social-hashtag discovery, and
+retained topics still inside their retention window) must also match
+`sources.CRAFT_VOCABULARY`, a hand-built word list covering the actual craft niche
+(knitting, crochet, resin, woodworking, papercraft, jewellery-making, etc. — see
+`sources.py` for the full list). This is a deliberate belt-and-braces backstop: it
+doesn't matter exactly how an irrelevant term slips past the score threshold, nothing
+gets auto-tracked unless it plausibly reads as a craft topic. `TREND_EXCLUDED_TOPICS` is
+the by-name denylist on top of that, for specific candidates that turned out to be noise
+after the fact ("craft online" cleared the score threshold but its corroboration was
+dominated by irrelevant crossword-site results; the AU-signal three above are the
+production incident's exact offenders) — belt-and-braces on top of belt-and-braces.
+`POST /api/trends/{topic}/purge` removes a topic's existing history outright (ops-only,
+not reversible) rather than waiting for it to age out of the retention window — used to
+clear those three topics' history once the bug was found.
 
 **Estimated Apify cost is visible in `/api/health`** (`estimated_daily_cost_usd`) and
 as a line on the Trend tracker section — derived from the currently-tracked topic
 count, their caps (including any bumped to 200), and cadence, using Apify's published
 per-1000-result pricing. This is a worst-case estimate (assumes every crawl hits its
 cap), not real billing data — there's no Apify billing API wired in here.
+
+**The Trend tracker UI is a digest, not a stat dump.** A social team opening the page
+shouldn't have to mentally sort every tracked topic to find the 2 or 3 that actually
+matter today. So the section leads with a one-line headline ("3 topics worth posting
+about today" / "Nothing urgent right now"), then only shows cards for topics currently
+classified `accelerating`, `emerging` or `new` up front — each with a plain-English
+summary line ("88 new posts in the last 24h, up +120% — worth a look today") instead of
+making the reader do the maths from raw numbers. Everything else (`sustained`,
+`cooling`, `collecting_baseline`, and topics that dropped out of tracking) sits behind a
+"Show N more" toggle — still there, still real data, just not competing for attention
+with what's actually worth posting about. The full stat grid (new this crawl, 24h/7d
+counts and % change, sparkline, caveats like a hit result cap or Google Trends
+corroboration) is unchanged underneath, on every card.
 
 ## Endpoints
 

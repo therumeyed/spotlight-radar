@@ -549,6 +549,40 @@ def is_blocked_search_intent(text):
     return any(w in t for w in BLOCKED_SEARCH_INTENT)
 
 
+# Craft-category vocabulary -- a discovered candidate must contain at least
+# one of these words to be considered plausibly ABOUT crafts. This exists
+# because "rising query for a seed keyword" turned out not to mean "related
+# to that keyword's topic": production surfaced "betfair exchange", "asos
+# sale" and "beauty brands salon" as qualified candidates for craft seed
+# terms -- almost certainly because a low-volume seed phrase (e.g. "craft
+# hack", "craft diy") has too few real search sessions for Google's
+# related-queries computation to be meaningful, so whatever's broadly
+# trending in the region bleeds through as statistical noise. Rather than
+# diagnose that exactly, this is a blunt but robust backstop: whatever the
+# cause, a term sharing no vocabulary with crafts at all should never be
+# auto-tracked. Deliberately broad (covers sub-genres/materials/techniques,
+# not just the literal seed keywords) so it doesn't reject something like
+# "punch needle kit", which shares no literal words with "crafts" itself.
+CRAFT_VOCABULARY = {
+    "craft", "crafts", "crafting", "diy", "handmade", "homemade", "handicraft",
+    "knit", "knitting", "crochet", "sew", "sewing", "embroidery", "needle",
+    "macrame", "resin", "clay", "pottery", "ceramic", "ceramics",
+    "paper", "papercraft", "origami", "scrapbook", "scrapbooking", "journal",
+    "journaling", "paint", "painting", "draw", "drawing", "sketch",
+    "wood", "woodwork", "woodworking", "carve", "carving", "whittle",
+    "bead", "beading", "jewellery", "jewelry", "felt", "felting",
+    "yarn", "fabric", "textile", "quilt", "quilting", "weav", "weaving",
+    "glue", "glitter", "ribbon", "ornament", "decor", "decoration",
+    "candle", "candlemaking", "soap", "soapmaking", "upcycle", "recycle",
+    "kit", "tutorial", "pattern", "workshop", "hobby", "handiwork",
+}
+
+
+def is_craft_relevant(text):
+    words = set(re.findall(r"[a-z]+", (text or "").lower()))
+    return bool(words & CRAFT_VOCABULARY)
+
+
 def trend_corroboration(topic):
     """DataForSEO (or the free fallback) rising-query check for `topic` --
     validation only, per the brief: this never supplies a post/view count,

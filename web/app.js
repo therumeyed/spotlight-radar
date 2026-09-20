@@ -172,6 +172,26 @@
     return capped ? `${n}+` : String(n);
   }
 
+  // Worth-watching first, noise last -- a social team opening this page
+  // shouldn't have to mentally sort 8 stat-tile cards to find the 2 that
+  // matter today.
+  const TREND_PRIORITY = { accelerating: 0, emerging: 1, new: 2, sustained: 3,
+                           cooling: 4, collecting_baseline: 5 };
+  const WORTH_WATCHING = new Set(["accelerating", "emerging", "new"]);
+
+  function plainSummary(snap, isCurrent) {
+    const cls = snap.classification, g = snap.growth_pct_24h, n = snap.new_posts_24h;
+    if (!isCurrent) return "No longer being actively tracked — showing its last known numbers.";
+    switch (cls) {
+      case "accelerating": return `Picking up pace — ${n} new posts today and still speeding up. Good time to post.`;
+      case "emerging": return `${n} new posts in the last 24h, up ${g > 0 ? "+" : ""}${g}% — worth a look today.`;
+      case "new": return `Just started appearing — ${n} new posts where there were none before.`;
+      case "sustained": return "Steady activity — not currently growing, but not fading either.";
+      case "cooling": return `Activity is dropping off (${g}%) — probably past its peak.`;
+      default: return "Still gathering data — check back after a couple more crawls before acting on this one.";
+    }
+  }
+
   function trendCard(topic, snap, history, isCurrent) {
     const cls = snap.classification;
     const capped = !!snap.hit_result_cap;
@@ -182,13 +202,12 @@
     const gt = snap.google_trends;
     const notes = [];
     if (capped) notes.push("Hit its result cap this crawl — counts are “at least”, the real numbers may be higher.");
-    if (!isCurrent) notes.push("No longer in the actively tracked set — showing its last known numbers.");
-    else if (cls === "collecting_baseline") notes.push("Still establishing a baseline — classification and growth firm up after a couple more crawls.");
-    else if (gt) notes.push(gt.corroborated ? "Google Trends agrees" : "Google Trends: no corroboration yet");
+    if (gt) notes.push(gt.corroborated ? "Google Trends agrees" : "Google Trends: no corroboration yet");
     if (snap.instagram_new_24h) notes.push(`+${snap.instagram_new_24h} on Instagram, 24h (supporting evidence only — not part of the count above)`);
-    return `<article class="trend-card${isCurrent ? "" : " trend-card--stale"}">
+    return `<article class="trend-card${isCurrent ? "" : " trend-card--stale"}${WORTH_WATCHING.has(cls) ? " trend-card--hot" : ""}">
       <div class="trend-card-head"><strong>${esc(topic)}</strong>
         <span class="trend-badge trend-badge--${esc(cls)}">${esc(TREND_LABEL[cls] || cls)}</span></div>
+      <p class="trend-summary">${esc(plainSummary(snap, isCurrent))}</p>
       <div class="trend-stats">
         <div><strong>${countText(snap.new_posts_this_crawl, capped)}</strong><span>new this crawl</span></div>
         <div><strong>${countText(snap.new_posts_24h, capped)}</strong><span>new, 24h</span></div>
@@ -218,9 +237,27 @@
       Promise.all(topics.map((t) =>
         fetch(`/api/trends/${encodeURIComponent(t.topic)}?days=30`).then((r) => r.json())
       )).then((details) => {
-        $("trendCards").innerHTML = details
-          .map((d) => trendCard(d.latest.topic, d.latest, d.history, current.has(d.latest.topic)))
-          .join("");
+        details.sort((a, b) => (TREND_PRIORITY[a.latest.classification] ?? 9)
+                              - (TREND_PRIORITY[b.latest.classification] ?? 9));
+        const hot = details.filter((d) => current.has(d.latest.topic) && WORTH_WATCHING.has(d.latest.classification));
+        const rest = details.filter((d) => !(current.has(d.latest.topic) && WORTH_WATCHING.has(d.latest.classification)));
+
+        $("trendHeadline").textContent = hot.length
+          ? `${hot.length} topic${hot.length > 1 ? "s" : ""} worth posting about today`
+          : (details.length ? "Nothing urgent right now — everything's still settling in or holding steady" : "");
+
+        const renderCard = (d) => trendCard(d.latest.topic, d.latest, d.history, current.has(d.latest.topic));
+        $("trendCards").innerHTML = hot.map(renderCard).join("");
+        $("trendMore").innerHTML = rest.map(renderCard).join("");
+        const toggle = $("trendMoreToggle");
+        if (rest.length) {
+          toggle.hidden = false;
+          toggle.dataset.label = `${rest.length} more (steady, cooling, or still baselining)`;
+          toggle.textContent = `Show ${toggle.dataset.label}`;
+        } else {
+          toggle.hidden = true;
+        }
+        $("trendMore").hidden = true;
       });
     }).catch(() => { $("trendTracker").hidden = true; });
   }
@@ -240,6 +277,11 @@
   }
 
   $("backToToday").addEventListener("click", () => { fetchToday(); });
+  $("trendMoreToggle").addEventListener("click", () => {
+    const more = $("trendMore"), toggle = $("trendMoreToggle");
+    more.hidden = !more.hidden;
+    toggle.textContent = (more.hidden ? "Show" : "Hide") + " " + toggle.dataset.label;
+  });
 
   // -------------------------------------------------------- history popover --
   const historyButton = $("historyButton");

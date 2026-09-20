@@ -79,12 +79,15 @@ ENABLED = os.environ.get("TREND_TRACKING_ENABLED", "").strip().lower() in ("1", 
 # Topics that must never be auto-selected (discovered OR retained), by exact
 # (case-insensitive) name -- for a candidate that turned out to be noise
 # after the fact. "craft online" surfaced ambiguous, off-topic corroboration
-# (crossword-clue pages) despite clearing the score threshold; excluded here
-# rather than relying on BLOCKED_SEARCH_INTENT, since the term itself
-# doesn't contain a blocked word -- only its related queries did. A manual
-# TREND_TRACK_TOPICS pin still overrides this (an explicit operator choice).
-EXCLUDED_TOPICS = {t.strip().lower() for t in
-                   os.environ.get("TREND_EXCLUDED_TOPICS", "craft online").split(",") if t.strip()}
+# (crossword-clue pages) despite clearing the score threshold. "betfair
+# exchange"/"asos sale"/"beauty brands salon" got auto-tracked in production
+# despite having nothing to do with crafts -- now caught going forward by
+# sources.is_craft_relevant(), but kept here too as a belt-and-braces
+# backstop for exactly these three. A manual TREND_TRACK_TOPICS pin still
+# overrides this (an explicit operator choice).
+EXCLUDED_TOPICS = {t.strip().lower() for t in os.environ.get(
+    "TREND_EXCLUDED_TOPICS",
+    "craft online,betfair exchange,asos sale,beauty brands salon").split(",") if t.strip()}
 
 _stop = threading.Event()
 _discovery_cache = {"rising": [], "trends": [], "at": None}
@@ -138,10 +141,12 @@ def select_topics():
     if AUTO_TRACK_COUNT > 0:
         rising_qualified = [c["term"] for c in _discovery_cache["rising"]
                             if c["term"] not in EXCLUDED_TOPICS
+                            and sources.is_craft_relevant(c["term"])
                             and (c["breakout"] or (c["growth_pct"] or 0) >= RISING_QUERY_MIN_GROWTH_PCT)]
         social_qualified = [t["term"] for t in _discovery_cache["trends"] if t.get("term")
                             and t.get("score", 0) >= DISCOVERY_MIN_SCORE
                             and not sources.is_blocked_search_intent(t["term"])
+                            and sources.is_craft_relevant(t["term"])
                             and t["term"].strip().lower() not in EXCLUDED_TOPICS]
         merged = []
         for t in rising_qualified + social_qualified:
@@ -149,7 +154,7 @@ def select_topics():
                 merged.append(t)
         auto = merged[:AUTO_TRACK_COUNT]
     retained = [t for t in trends.recently_tracked_topics(TOPIC_RETENTION_DAYS)
-                if t.strip().lower() not in EXCLUDED_TOPICS]
+                if t.strip().lower() not in EXCLUDED_TOPICS and sources.is_craft_relevant(t)]
 
     ordered = []
     for t in MANUAL_TOPICS + auto + retained:
