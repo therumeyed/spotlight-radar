@@ -51,6 +51,9 @@ badge. Add the keys below and it goes **live**.
 | `TREND_DISCOVERY_INTERVAL_HOURS` | How often auto-discovery re-crawls the broad seed searches for new candidates. | `24` |
 | `TREND_DISCOVERY_MIN_SCORE` | Minimum rank_trends() score for a Layer 1b (social-hashtag) candidate to qualify. | `0.5` |
 | `TREND_RISING_QUERY_MIN_GROWTH_PCT` | Minimum Google Trends growth % for a Layer 1 (rising-query) candidate to qualify (Breakout always qualifies). | `20` |
+| `APIFY_PINTEREST_TRENDS_ACTOR` | Apify actor id for Pinterest Trends discovery. | `automation-lab~pinterest-trends-scraper` |
+| `TREND_PINTEREST_TREND_TYPES` | Which Pinterest Trends tables to pull (`top_monthly`, `top_yearly`, `growing`, `seasonal` — any comma-separated subset). | `growing,seasonal` |
+| `TREND_PINTEREST_MAX_RESULTS` | Max results per requested trend type, per discovery cycle. | `50` |
 
 > **Note on the Apify actors:** actor input/output shapes vary between actors, so the
 > parsers in `sources.py` are deliberately defensive — when you plug in your real key,
@@ -177,17 +180,17 @@ score.
 
 **Which topics get tracked** is decided fresh every crawl cycle, not fixed once: it's
 the union of any manual pins (`TREND_TRACK_TOPICS`, optional), today's top
-`TREND_AUTO_TRACK_COUNT` *qualified* candidates from two discovery layers, and anything
+`TREND_AUTO_TRACK_COUNT` *qualified* candidates from three discovery layers, and anything
 still within `TREND_TOPIC_RETENTION_DAYS` of its last crawl even if it dropped out of
 today's top picks — so a fading trend gets to show "Cooling" instead of just vanishing.
 The total tracked set is capped at `TREND_AUTO_TRACK_MAX` regardless, so cost stays
 bounded no matter how much discovery churns.
 
-**Layered discovery — Google Trends decides what's worth checking; the social crawl
-only ever confirms it.** Two channels feed the candidate pool, both refreshed together
-on the same cadence (see below):
+**Layered discovery — cheap search-signal sources decide what's worth checking; the
+social crawl only ever confirms it.** Three channels feed the candidate pool, all
+refreshed together on the same cadence (see below):
 
-1. **Rising-query discovery (primary)** — `sources.rising_query_candidates()` pulls
+1. **Rising-query discovery (co-primary)** — `sources.rising_query_candidates()` pulls
    Google's own Rising Queries (via DataForSEO), one call per `RADAR_KEYWORDS` seed
    theme, `past_day` window — literally the same panel as Google Trends Explore's UI.
    One DataForSEO task per seed theme (~$0.0012 each — ten seed themes costs about a
@@ -195,27 +198,45 @@ on the same cadence (see below):
    sub-categories: Google's own trend detection does that work. A candidate qualifies by
    being flagged **Breakout**, or clearing `TREND_RISING_QUERY_MIN_GROWTH_PCT` (default
    `20`) growth. This channel fills `TREND_AUTO_TRACK_COUNT` slots first.
-2. **Social-hashtag discovery (fallback/supplement)** — `engine.discover_trends()`, the
+2. **Pinterest Trends discovery (co-primary)** — `sources.pinterest_trending_candidates()`
+   pulls Pinterest's own public Trends tables (`growing`/`seasonal` by default, see
+   `TREND_PINTEREST_TREND_TYPES`) for the whole market in one Apify call. Added to test
+   a stakeholder hypothesis: Pinterest search skews toward forward planning (people
+   search "christmas crafts" in August), so it might surface a topic before it shows up
+   as social content anywhere else. Deliberately **not** a pin-search crawl — a pin's
+   `created_at` can be years old (Pinterest resurfaces old pins constantly), and pin
+   search has no reliable newest-first sort, so counting "new pins" would mostly measure
+   the resurfacing algorithm, not real interest — the exact problem that already ruled
+   out Instagram as a primary velocity source. Pulling the Trends tables directly
+   sidesteps that, and also sidesteps the per-term detail chart's login wall (confirmed:
+   `trends.pinterest.com/detail/...` redirects to a sign-in prompt for an unauthenticated
+   visitor; the Trends tables endpoint this actor uses does not). Qualification is
+   **binary, not threshold-based** — appearing in Pinterest's own `growing`/`seasonal`
+   table at all is the signal; the actor's `weeklyChange`/`monthlyChange`/`yearlyChange`
+   fields are captured but never thresholded on, since their units aren't documented
+   (percent? index? raw delta? — unconfirmed against real data). Revisit once a live run
+   under a real `APIFY_API_KEY` shows what real values look like.
+3. **Social-hashtag discovery (fallback/supplement)** — `engine.discover_trends()`, the
    original mechanism: broad TikTok/Instagram seed searches clustered into recurring
    hashtags, same `collect()` + `rank_trends()` pipeline the dashboard's own ideas use,
-   qualifying at `TREND_DISCOVERY_MIN_SCORE`. Fills whatever slots the rising-query
-   channel didn't — catches something trending socially before it shows up in Google
-   search volume, which the rising-query channel alone can't see.
+   qualifying at `TREND_DISCOVERY_MIN_SCORE`. Fills whatever slots the first two channels
+   didn't — catches something trending socially before it shows up in Google or
+   Pinterest search volume, which neither of those alone can see.
 
-Either way, a discovered candidate is just that — a candidate. Nothing is claimed about
-its actual post velocity until it's promoted into tracking and gets a real TikTok crawl,
-same as any manually pinned topic. This is the layering: Google Trends tells you what's
-worth checking, cheaply and broadly; the social tracker is what actually checks it.
+Any discovered candidate is just that — a candidate. Nothing is claimed about its actual
+post velocity until it's promoted into tracking and gets a real TikTok crawl, same as any
+manually pinned topic. This is the layering: cheap search-signal sources tell you what's
+worth checking, broadly; the social tracker is what actually checks it.
 
-Both channels refresh on the same cadence (`TREND_DISCOVERY_INTERVAL_HOURS`, default
+All three channels refresh on the same cadence (`TREND_DISCOVERY_INTERVAL_HOURS`, default
 once/day) — deliberately decoupled from the per-topic tracking cadence
 (`TREND_CRAWL_INTERVAL_HOURS`, default every 12h), because running the social-hashtag
-discovery crawl that often would roughly double the aggregate-crawl cost (the
-rising-query channel's own cost is negligible at any cadence). Set them equal for
-genuinely every-scheduled-run discovery if that's worth the extra spend to you.
-Discovery only ever runs from the scheduler's own background loop, never from an
-incoming request — `/api/health`/`/api/trends` only ever read whatever was last
-discovered, so a slow live crawl can't make a health check look like the service is
+discovery crawl that often would roughly double the aggregate-crawl cost (the rising-query
+and Pinterest Trends channels are both cheap enough that their own cadence barely
+matters). Set them equal for genuinely every-scheduled-run discovery if that's worth the
+extra spend to you. Discovery only ever runs from the scheduler's own background loop,
+never from an incoming request — `/api/health`/`/api/trends` only ever read whatever was
+last discovered, so a slow live crawl can't make a health check look like the service is
 down.
 
 **Discovered candidates are screened before they can ever be tracked, two ways.**
@@ -228,8 +249,8 @@ topic's corroboration data can't get drowned in unrelated crossword-clue noise e
 Second — added after a production incident where "betfair exchange", "asos sale" and
 "beauty brands salon" got auto-tracked for several crawl cycles because a low-volume seed
 keyword's "related queries" pulled in broadly-trending-but-unrelated AU search terms —
-every candidate from every source (rising queries, social-hashtag discovery, and
-retained topics still inside their retention window) must also match
+every candidate from every source (rising queries, Pinterest Trends, social-hashtag
+discovery, and retained topics still inside their retention window) must also match
 `sources.CRAFT_VOCABULARY`, a hand-built word list covering the actual craft niche
 (knitting, crochet, resin, woodworking, papercraft, jewellery-making, etc. — see
 `sources.py` for the full list). This is a deliberate belt-and-braces backstop: it

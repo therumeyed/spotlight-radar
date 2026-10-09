@@ -54,6 +54,7 @@ def health():
                                 "discovery_interval_hours": scheduler.DISCOVERY_INTERVAL_HOURS,
                                 "rising_query_min_growth_pct": scheduler.RISING_QUERY_MIN_GROWTH_PCT,
                                 "rising_query_candidates": len(scheduler._discovery_cache.get("rising", [])),
+                                "pinterest_trend_candidates": len(scheduler._discovery_cache.get("pinterest", [])),
                                 "discovery_last_run": (scheduler._discovery_cache["at"].isoformat()
                                                         if scheduler._discovery_cache["at"] else None),
                                 "estimated_daily_cost_usd": (scheduler.estimate_daily_cost_usd()

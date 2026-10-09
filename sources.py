@@ -52,6 +52,24 @@ INSTAGRAM_ACTOR = os.environ.get("APIFY_INSTAGRAM_ACTOR", "apify~instagram-hasht
 _TIMEOUT        = float(os.environ.get("APIFY_RUN_TIMEOUT", "120"))
 _TRENDS_TIMEOUT = float(os.environ.get("TRENDS_TIMEOUT", "8"))    # short: never stall a daily read
 
+# Pinterest Trends discovery (Layer 1, alongside Google Trends rising queries).
+# A stakeholder asked whether Pinterest surfaces emerging topics earlier than
+# TikTok/Instagram -- plausible in principle (Pinterest search skews toward
+# forward planning: people search "christmas crafts" in August), but NOT via
+# a pin-search crawl: Pinterest's pin search has no reliable newest-first sort
+# (same dealbreaker that kept Instagram supporting-only), and worse, a pin's
+# `created_at` can be years old since Pinterest resurfaces old pins constantly
+# -- counting "new pins" would mostly measure the resurfacing algorithm, not
+# real velocity. This actor sidesteps that: it reads Pinterest's own public
+# Trends tables (trends.pinterest.com) directly, no login wall, no pin-search
+# recency problem -- same discovery role as rising_query_candidates() below,
+# never a velocity source.
+PINTEREST_TRENDS_ACTOR = os.environ.get("APIFY_PINTEREST_TRENDS_ACTOR",
+                                         "automation-lab~pinterest-trends-scraper")
+PINTEREST_TREND_TYPES = tuple(t.strip() for t in os.environ.get(
+    "TREND_PINTEREST_TREND_TYPES", "growing,seasonal").split(",") if t.strip())
+_PINTEREST_MAX_RESULTS = int(os.environ.get("TREND_PINTEREST_MAX_RESULTS", "50"))
+
 # ---- DataForSEO (optional) — a paid, reliable Google Trends source. When
 # configured, it replaces the free scrape below (which Google rate-limits hard
 # from cloud/datacenter IPs); without it, nothing changes. Its "live" endpoint
@@ -665,4 +683,45 @@ def rising_query_candidates(themes, time_range="past_day"):
                 not breakout and not prev["breakout"] and (growth_pct or 0) > (prev["growth_pct"] or 0))
             if stronger:
                 best[term] = {"term": term, "breakout": breakout, "growth_pct": growth_pct}
+    return list(best.values())
+
+
+def pinterest_trending_candidates(country=None, trend_types=None):
+    """Layer 1 discovery via Pinterest's own public Trends tables (growing /
+    seasonal by default) for `country` -- one Apify call covers the whole
+    market, no per-theme looping needed (unlike rising_query_candidates(),
+    this isn't a per-keyword lookup).
+
+    Deliberately does NOT threshold on the actor's weeklyChange/monthlyChange/
+    yearlyChange fields: the actor's own docs don't state their units (percent?
+    index? raw delta?), so a numeric cutoff here would be a guess dressed up as
+    a rule. Instead, qualification is binary -- appearing in Pinterest's own
+    "growing" or "seasonal" table at all IS the signal; Pinterest's algorithm
+    already did the thresholding. The raw change figures are still returned
+    per term so they're visible (health endpoint, manual review) and so a
+    numeric threshold can be added later once those units are verified against
+    real data -- not before.
+
+    Returns a deduplicated list of {"term", "trend_type", "rank",
+    "weekly_change", "monthly_change", "yearly_change"} -- the best (lowest)
+    rank kept if the same term appears in more than one requested table --
+    filtered through BLOCKED_SEARCH_INTENT the same way the other discovery
+    channels are. [] (not None) if Apify isn't configured or the call fails,
+    so a caller can iterate it unconditionally."""
+    country = country or GEO
+    trend_types = list(trend_types or PINTEREST_TREND_TYPES)
+    items = _run(PINTEREST_TRENDS_ACTOR, {"countries": [country], "trendTypes": trend_types,
+                                           "maxResultsPerCountry": _PINTEREST_MAX_RESULTS})
+    best = {}
+    for row in items or []:
+        term = (row.get("term") or "").strip().lower()
+        if not term or is_blocked_search_intent(term):
+            continue
+        rank = row.get("rank")
+        prev = best.get(term)
+        if prev is None or (rank is not None and (prev["rank"] is None or rank < prev["rank"])):
+            best[term] = {"term": term, "trend_type": row.get("trendType"), "rank": rank,
+                          "weekly_change": row.get("weeklyChange"),
+                          "monthly_change": row.get("monthlyChange"),
+                          "yearly_change": row.get("yearlyChange")}
     return list(best.values())

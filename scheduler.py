@@ -23,20 +23,31 @@ not a fixed list set once: it's the union of
      or clearing TREND_RISING_QUERY_MIN_GROWTH_PCT. This is the PRIMARY
      discovery channel -- tried first, fills as many of the
      TREND_AUTO_TRACK_COUNT slots as it can.
+  2a. Also Layer 1 (co-primary): sources.pinterest_trending_candidates() --
+     Pinterest's own public Trends tables (growing/seasonal by default),
+     one Apify call per discovery cycle for the whole market. Added to test
+     a stakeholder's hypothesis that Pinterest surfaces planning-stage
+     interest (people searching "christmas crafts" in August) before it
+     shows up as social content elsewhere. Qualification is binary --
+     appearing in Pinterest's own growing/seasonal table at all, not a
+     numeric threshold (the actor's growth-rate units aren't documented;
+     see sources.py). Merged with the rising-query channel's results before
+     the social-hashtag fallback gets a turn.
   2b. Layer 1b (fallback/supplement): engine.discover_trends() -- the
      broader social-hashtag-clustering discovery (same RADAR_KEYWORDS,
      clustered TikTok/Instagram signals). Fills any TREND_AUTO_TRACK_COUNT
-     slots the rising-query channel didn't -- catches something trending
-     socially before it shows up in Google search volume. A candidate
-     qualifies by clearing TREND_DISCOVERY_MIN_SCORE.
-     Both channels refresh together on the SAME cadence
+     slots the first two channels didn't -- catches something trending
+     socially before it shows up in Google/Pinterest search volume. A
+     candidate qualifies by clearing TREND_DISCOVERY_MIN_SCORE.
+     All three channels refresh together on the SAME cadence
      (TREND_DISCOVERY_INTERVAL_HOURS, cached in-process between calls) --
      deliberately decoupled from the per-topic tracking cadence below,
      since running the social discovery crawl that often would roughly
-     double the aggregate-crawl cost (the rising-query channel itself is
-     cheap enough that its own cadence barely matters). Defaults to
-     once/day; set it equal to TREND_CRAWL_INTERVAL_HOURS for genuinely
-     every-scheduled-run discovery if the extra spend is worth it to you.
+     double the aggregate-crawl cost (the rising-query and Pinterest
+     channels are both cheap enough that their own cadence barely matters).
+     Defaults to once/day; set it equal to TREND_CRAWL_INTERVAL_HOURS for
+     genuinely every-scheduled-run discovery if the extra spend is worth it
+     to you.
   3. Anything already accumulating history within TREND_TOPIC_RETENTION_DAYS
      -- so a topic that drops out of today's top picks still gets a few
      more crawls to show its real trajectory (including cooling) instead of
@@ -90,7 +101,7 @@ EXCLUDED_TOPICS = {t.strip().lower() for t in os.environ.get(
     "craft online,betfair exchange,asos sale,beauty brands salon").split(",") if t.strip()}
 
 _stop = threading.Event()
-_discovery_cache = {"rising": [], "trends": [], "at": None}
+_discovery_cache = {"rising": [], "pinterest": [], "trends": [], "at": None}
 
 
 def _discovery_due():
@@ -119,6 +130,11 @@ def _refresh_discovery_if_due():
         _log.exception("trend scheduler: rising-query discovery failed")
         _discovery_cache["rising"] = []
     try:
+        _discovery_cache["pinterest"] = sources.pinterest_trending_candidates()
+    except Exception:
+        _log.exception("trend scheduler: Pinterest Trends discovery failed")
+        _discovery_cache["pinterest"] = []
+    try:
         _discovery_cache["trends"] = engine.discover_trends()
     except Exception:
         _log.exception("trend scheduler: social discovery crawl failed")
@@ -135,9 +151,10 @@ def select_topics():
     EXCLUDED_TOPICS, BLOCKED_SEARCH_INTENT, is_craft_relevant() and
     is_too_generic() are all applied to auto-discovered and retained
     candidates, never to MANUAL_TOPICS -- an explicit pin is an operator's
-    deliberate choice and overrides all four. The rising-query channel
-    (Layer 1, primary) fills slots first; engine.discover_trends() (Layer 1b)
-    fills whatever's left -- see module docstring for why both exist."""
+    deliberate choice and overrides all four. The rising-query and Pinterest
+    Trends channels (Layer 1, co-primary) fill slots first; engine.
+    discover_trends() (Layer 1b) fills whatever's left -- see module
+    docstring for why all three exist."""
     auto = []
     if AUTO_TRACK_COUNT > 0:
         rising_qualified = [c["term"] for c in _discovery_cache["rising"]
@@ -145,6 +162,10 @@ def select_topics():
                             and sources.is_craft_relevant(c["term"])
                             and not sources.is_too_generic(c["term"])
                             and (c["breakout"] or (c["growth_pct"] or 0) >= RISING_QUERY_MIN_GROWTH_PCT)]
+        pinterest_qualified = [c["term"] for c in _discovery_cache["pinterest"]
+                               if c["term"] not in EXCLUDED_TOPICS
+                               and sources.is_craft_relevant(c["term"])
+                               and not sources.is_too_generic(c["term"])]
         social_qualified = [t["term"] for t in _discovery_cache["trends"] if t.get("term")
                             and t.get("score", 0) >= DISCOVERY_MIN_SCORE
                             and not sources.is_blocked_search_intent(t["term"])
@@ -152,7 +173,7 @@ def select_topics():
                             and not sources.is_too_generic(t["term"])
                             and t["term"].strip().lower() not in EXCLUDED_TOPICS]
         merged = []
-        for t in rising_qualified + social_qualified:
+        for t in rising_qualified + pinterest_qualified + social_qualified:
             if t not in merged:
                 merged.append(t)
         auto = merged[:AUTO_TRACK_COUNT]
@@ -181,6 +202,13 @@ _DISCOVERY_TIKTOK_RESULTS = 6 * 30
 _DISCOVERY_INSTAGRAM_RESULTS = 5 * 60
 # DataForSEO: one task per call regardless of result count within a task.
 _DATAFORSEO_PRICE_PER_CALL = 0.0012
+# automation-lab/pinterest-trends-scraper, from its own Apify listing:
+# "from $0.60 / 1,000 trend results". Conservative assumption since the
+# listing doesn't say whether maxResultsPerCountry caps each requested
+# trendType separately or the call as a whole: this estimate assumes the
+# worse case (each trend type costs up to the full cap), consistent with
+# the rest of this estimate always assuming the cap is hit.
+_PINTEREST_PRICE_PER_1K = 0.60
 
 
 def estimate_daily_cost_usd():
@@ -207,7 +235,10 @@ def estimate_daily_cost_usd():
 
     rising_query_cost = len(sources.KEYWORDS) * _DATAFORSEO_PRICE_PER_CALL * discovery_crawls_per_day
 
-    return round(tracking_cost + discovery_cost + rising_query_cost, 2)
+    pinterest_cost = ((len(sources.PINTEREST_TREND_TYPES) * sources._PINTEREST_MAX_RESULTS / 1000.0)
+                      * _PINTEREST_PRICE_PER_1K * discovery_crawls_per_day)
+
+    return round(tracking_cost + discovery_cost + rising_query_cost + pinterest_cost, 2)
 
 
 def _seconds_until_next_run(topics):
