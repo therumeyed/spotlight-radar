@@ -22,10 +22,11 @@ With **no keys set it runs in SAMPLE mode** — realistic crafts trends so you c
 shape of it. Nothing is presented as real live data; the header shows a `SAMPLE DATA`
 badge. Add the keys below and it goes **live**.
 
-## Configuration (all optional; env vars)
+## Configuration (env vars; all optional except the one below)
 
 | Variable | What it does | Default |
 |---|---|---|
+| `DASHBOARD_PASSWORD` | **Required for the app to serve anything except `/api/health`.** Gates the whole dashboard — the HTML page, every `/api/*` endpoint, and static JS/CSS — behind one shared HTTP Basic password. Fails closed: unset, every gated request gets a 503 instead of serving the dashboard unauthenticated. The username field in the browser's login prompt is ignored, only the password is checked. On Render: this service → **Environment** tab → **Add Environment Variable** → key `DASHBOARD_PASSWORD`, value = whatever password you want to require → **Save Changes** (triggers a redeploy). | — (503, locked) |
 | `APIFY_API_KEY` | Turns on live TikTok + Instagram data via Apify. | — (sample mode) |
 | `DATAFORSEO_LOGIN` / `DATAFORSEO_PASSWORD` | Turns on DataForSEO for Google Trends (paid, reliable) instead of the free scrape below. | — (free scrape) |
 | `ANTHROPIC_API_KEY` | Writes the 5 ideas with Claude; without it, a grounded rule-based fallback is used. | — (rules) |
@@ -299,11 +300,13 @@ corroboration) is unchanged underneath, on every card.
 
 ## Endpoints
 
+All of these require HTTP Basic auth (the `DASHBOARD_PASSWORD` configured above) except `/api/health`, which Render's own uptime monitoring polls without credentials — ops tooling (curl, `POST` endpoints below) needs `-u "x:<password>"` the same as a browser does.
+
 - `GET /api/radar` — today's radar (ideas + ranked trends + raw signals), cached to one build/day.
 - `GET /api/radar/history?year=&month=` — which dates in that month have a saved report (for the History calendar).
 - `GET /api/radar/{date}` — a specific past day's report exactly as originally generated. Read-only, never regenerates.
 - `POST /api/refresh` — force a fresh build for today. Deliberately not linked from the UI — report generation is schedule-only so end users can't trigger a paid crawl/LLM run on demand. Ops-only lever for a failed scheduled build.
-- `GET /api/health` — liveness + whether Apify/AI/history/trend-tracking are configured.
+- `GET /api/health` — the one unauthenticated endpoint. Liveness + whether Apify/AI/history/trend-tracking are configured.
 - `GET /api/trends` — every tracked topic with its latest snapshot.
 - `GET /api/trends/{topic}?days=30` — one topic's latest snapshot + snapshot history (for a trend line).
 - `POST /api/trends/{topic}/crawl` — ops-only: run one crawl+snapshot cycle right now, rather than waiting for the scheduler. Spends real Apify/DataForSEO budget if configured — not linked from the UI.
@@ -312,7 +315,11 @@ corroboration) is unchanged underneath, on every card.
 ## Deploying
 
 `Dockerfile` builds a standalone image (`pip install -r requirements.txt`, then
-`uvicorn radar_app:app`). On Render specifically: **add a Postgres database and set
+`uvicorn radar_app:app`). **Set `DASHBOARD_PASSWORD` before anyone else should see this
+service** — without it every page is a 503, which is deliberate, but it means a fresh
+deploy is unusable until it's set: Render dashboard → this service → **Environment** tab
+→ **Add Environment Variable** → key `DASHBOARD_PASSWORD`, any value you want as the
+password → **Save Changes** (triggers a redeploy). On Render specifically: **add a Postgres database and set
 `DATABASE_URL` on this service** — Render's disk does not survive a redeploy or instance
 spin-down, so without a database, History only lasts for the lifetime of a single running
 instance. Render dashboard → New + → PostgreSQL → create a small database → copy its

@@ -15,13 +15,19 @@ Endpoints:
 
 Self-contained — imports only `engine`/`sources`/`store`/`trends`/`tracker`/
 `scheduler` in this folder, so the whole directory ports cleanly elsewhere.
+
+The whole app sits behind one shared HTTP Basic password (DASHBOARD_PASSWORD)
+-- see _require_login below. The only exception is /api/health, which
+Render's own automated monitoring polls without credentials.
 """
+import base64
 import datetime as _dt
+import hmac
 import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 import engine
@@ -39,6 +45,54 @@ async def _lifespan(app):
 
 app = FastAPI(title="The Radar — daily social trend discovery", lifespan=_lifespan)
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+
+# ---- login wall: one shared password gates the whole app ----
+# Set on Render under this service -> Environment -> Add Environment Variable
+# -> key DASHBOARD_PASSWORD, value = whatever password you want to require.
+# The username field in the browser's prompt is ignored -- only the password
+# is checked -- so anything can be typed there.
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "").strip()
+
+# Render's own health monitoring polls this path with no credentials and no
+# browser -- it must stay reachable, and it exposes no dashboard content
+# (config/status booleans only), so it's the one deliberate exception.
+_AUTH_EXEMPT_PATHS = {"/api/health"}
+
+
+def _password_matches(header_value):
+    """True if `header_value` (a raw Authorization header) carries the
+    configured DASHBOARD_PASSWORD via HTTP Basic. Timing-safe comparison --
+    never a plain `==` on a secret."""
+    if not header_value or not header_value.startswith("Basic "):
+        return False
+    try:
+        decoded = base64.b64decode(header_value[6:]).decode("utf-8")
+    except Exception:
+        return False
+    _, _, password = decoded.partition(":")
+    return hmac.compare_digest(password, DASHBOARD_PASSWORD)
+
+
+@app.middleware("http")
+async def _require_login(request, call_next):
+    """Gates every request -- the dashboard HTML, every /api/* endpoint, and
+    static JS/CSS alike -- behind DASHBOARD_PASSWORD, except /api/health.
+
+    Fails CLOSED, not open: if DASHBOARD_PASSWORD isn't set at all, every
+    gated request gets a 503 rather than silently serving the dashboard
+    with no password configured. A misconfigured service is a visible
+    outage, never an invisible exposure."""
+    if request.url.path in _AUTH_EXEMPT_PATHS:
+        return await call_next(request)
+    if not DASHBOARD_PASSWORD:
+        return PlainTextResponse(
+            "This dashboard requires a password that hasn't been configured yet "
+            "-- set DASHBOARD_PASSWORD on this Render service.", status_code=503)
+    if not _password_matches(request.headers.get("authorization")):
+        return PlainTextResponse(
+            "Password required.", status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="The Radar"'})
+    return await call_next(request)
 
 
 @app.get("/api/health")
